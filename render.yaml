@@ -1,0 +1,24 @@
+# Deploy gratis ke Render (https://render.com).
+# Cara: buat Web Service baru dari repo ini, lalu isi env var di bawah
+# (Environment > Add Environment Variable). Render mengisi PORT sendiri.
+# SUPABASE_URL + SUPABASE_SERVICE_KEY: opsional, tapi SANGAT disarankan —
+# tanpanya, state reset ke seed tiap restart (disk Render gratis ephemeral).
+# Isi keduanya setelah menjalankan supabase.sql di project Supabase gratis.
+services:
+  - type: web
+    name: muse-team-server
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: MAS_API_KEY
+        sync: false
+      - key: MBAK_API_KEY
+        sync: false
+      - key: ELL_API_KEY
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false

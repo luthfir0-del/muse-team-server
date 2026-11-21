@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tim Muse — Dashboard</title>
+<style>
+  :root { --bg:#0f172a; --card:#1e293b; --card2:#273449; --text:#f1f5f9; --muted:#94a3b8; --line:#334155; --green:#22c55e; --grey:#64748b; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; background:var(--bg); color:var(--text); }
+  header { padding:18px 16px 8px; max-width:960px; margin:0 auto; }
+  header h1 { margin:0; font-size:22px; }
+  header p { margin:6px 0 0; color:var(--muted); font-size:14px; }
+  .meta { font-size:12px; color:var(--muted); margin-top:6px; }
+  main { max-width:960px; margin:0 auto; padding:8px 16px 40px; display:grid; gap:16px; }
+  .grid { display:grid; gap:16px; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:16px; }
+  .agent-head { display:flex; gap:12px; align-items:center; }
+  .avatar { width:52px; height:52px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:22px; font-weight:800; color:#0f172a; flex:none; }
+  .agent-head h2 { margin:0; font-size:18px; }
+  .agent-head .role { color:var(--muted); font-size:13px; }
+  .dot { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:6px; vertical-align:middle; }
+  .dot.on { background:var(--green); } .dot.off { background:var(--grey); }
+  .status { font-size:13px; margin-top:4px; }
+  .activity { margin-top:10px; font-size:14px; background:var(--card2); border-radius:10px; padding:10px 12px; }
+  .activity small { color:var(--muted); display:block; font-size:11px; letter-spacing:.04em; text-transform:uppercase; }
+  .bar { height:8px; background:#0f172a; border-radius:99px; overflow:hidden; margin:10px 0 4px; }
+  .bar > div { height:100%; border-radius:99px; }
+  .prog { font-size:13px; color:var(--muted); }
+  ul.tasks { list-style:none; margin:10px 0 0; padding:0; display:grid; gap:8px; }
+  ul.tasks li { font-size:14px; background:var(--card2); border-radius:10px; padding:9px 11px; }
+  ul.tasks li .t { display:flex; justify-content:space-between; gap:8px; }
+  ul.tasks li .time { color:var(--muted); font-size:12px; white-space:nowrap; }
+  ul.tasks li .d { color:var(--muted); font-size:12.5px; margin-top:3px; }
+  .badge { font-size:11px; font-weight:700; padding:2px 8px; border-radius:99px; background:#0f172a; color:var(--text); white-space:nowrap; }
+  .badge.done { background:#14532d; color:#bbf7d0; }
+  .badge.in_progress { background:#713f12; color:#fde68a; }
+  .badge.blocked { background:#7f1d1d; color:#fecaca; }
+  .badge.ready { background:#1e3a5f; color:#bfdbfe; }
+  h3 { margin:0 0 10px; font-size:16px; }
+  .log, .chat { list-style:none; margin:0; padding:0; display:grid; gap:8px; font-size:14px; }
+  .log li, .chat li { background:var(--card2); border-radius:10px; padding:9px 11px; }
+  .log time, .chat time { color:var(--muted); font-size:12px; display:block; }
+  .note { font-size:13px; color:var(--muted); }
+  .err { color:#fca5a5; font-size:14px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Tim Muse — Ruang Kerja Bersama</h1>
+  <p>Mas, Mbak, dan Ell terhubung ke satu server. Tiap agent update status dan tugasnya sendiri lewat kunci API-nya.</p>
+  <div class="meta" id="meta">Memuat…</div>
+</header>
+<main>
+  <section class="grid" id="agents"></section>
+  <section class="card">
+    <h3>💬 Chat Tim</h3>
+    <ul class="chat" id="chat"></ul>
+    <p class="note">Pesan dikirim tiap agent lewat konektor MCP-nya. Server hanya menyimpan — tidak pernah membalas atas nama siapa pun.</p>
+  </section>
+  <section class="card">
+    <h3>📋 Aktivitas Terakhir</h3>
+    <ul class="log" id="log"></ul>
+  </section>
+</main>
+<script>
+const STATUS_LABEL = { done:'Selesai', in_progress:'Dikerjakan', pending:'Menunggu', ready:'Siap', blocked:'Tertunda', scheduled:'Terjadwal' };
+const fmtTime = (iso) => { try { return new Date(iso).toLocaleString('id-ID',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}); } catch { return iso; } };
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+async function load() {
+  try {
+    const r = await fetch('/api/state');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const s = await r.json();
+    document.getElementById('meta').textContent = 'Terakhir diperbarui: ' + fmtTime(s.updated) + ' • Data tersimpan di server (bukan di halaman ini)';
+
+    document.getElementById('agents').innerHTML = s.agents.map(a => {
+      const tasks = s.tasks.filter(t => t.agent === a.id);
+      const done = tasks.filter(t => t.status === 'done').length;
+      const pct = tasks.length ? Math.round(done / tasks.length * 100) : 0;
+      const online = a.status === 'connected';
+      return `<article class="card">
+        <div class="agent-head">
+          <div class="avatar" style="background:${a.color}">${esc(a.name[0])}</div>
+          <div><h2>${esc(a.name)}</h2><div class="role">${esc(a.role)}</div>
+          <div class="status"><span class="dot ${online?'on':'off'}"></span>${online?'Terhubung':'Menunggu join'}</div></div>
+        </div>
+        <div class="activity"><small>Sedang dikerjakan</small>${esc(a.currentActivity || '—')}</div>
+        <div class="bar"><div style="width:${pct}%;background:${a.color}"></div></div>
+        <div class="prog">${done}/${tasks.length} tugas selesai (${pct}%)</div>
+        <ul class="tasks">${tasks.map(t => `<li>
+          <div class="t"><span>${esc(t.title)}</span><span class="badge ${t.status}">${STATUS_LABEL[t.status]||t.status}</span></div>
+          <div class="t"><span class="d">${esc(t.detail||'')}</span><span class="time">${esc(t.time||'')}</span></div>
+        </li>`).join('') || '<li>Belum ada tugas.</li>'}</ul>
+      </article>`;
+    }).join('');
+
+    const teamMsgs = s.messages.filter(m => m.to === 'team');
+    document.getElementById('chat').innerHTML = teamMsgs.length
+      ? teamMsgs.slice(-20).reverse().map(m => `<li><b style="color:${(s.agents.find(a=>a.id===m.from)||{}).color||'#fff'}">${esc((s.agents.find(a=>a.id===m.from)||{}).name||m.from)}</b> — ${esc(m.text)}<time>${fmtTime(m.time)}</time></li>`).join('')
+      : '<li>Belum ada pesan di ruang tim.</li>';
+
+    document.getElementById('log').innerHTML = s.activity.length
+      ? s.activity.slice(-15).reverse().map(e => `<li><b>${esc((s.agents.find(a=>a.id===e.agent)||{}).name||e.agent)}</b> — ${esc(e.event)}<time>${fmtTime(e.time)}</time></li>`).join('')
+      : '<li>Belum ada aktivitas.</li>';
+  } catch (e) {
+    document.getElementById('meta').innerHTML = '<span class="err">Gagal memuat state: ' + esc(e.message) + '</span>';
+  }
+}
+load();
+setInterval(load, 30000);
+</script>
+</body>
+</html>
