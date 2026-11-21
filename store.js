@@ -64,8 +64,24 @@ function saveToFile(stateFile, state) {
   fs.renameSync(tmp, stateFile);
 }
 
+// Pesan error TIDAK PERNAH boleh membawa nilai kunci: kalau-kalau suatu
+// pesan error menyertakan token (misalnya JWT service_role), redaksi
+// pola JWT-nya. Pesan error Supabase normal ("permission denied ...",
+// "Failed to fetch", dsb.) tidak mengandung kunci, jadi tidak berubah.
+function sanitizeErrorMessage(message) {
+  return String(message || "Supabase error").replace(
+    /eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g,
+    "[KUNCI DIREDAKSI]"
+  );
+}
+
 export function createStateStore({ stateFile, seedFile, supabaseClient = null, logger = console } = {}) {
   const supabase = supabaseClient;
+  // Error Supabase TERAKHIR (pesan saja, tanpa nilai kunci), supaya /health
+  // bisa menampilkannya sebagai `supabaseError` untuk diagnosis tanpa
+  // membuka log. null kalau tidak ada error (atau Supabase tidak dipakai).
+  // Dibersihkan (null) setiap operasi Supabase berhasil.
+  let lastError = null;
 
   async function loadFromSupabase() {
     const { data, error } = await supabase
@@ -93,14 +109,17 @@ export function createStateStore({ stateFile, seedFile, supabaseClient = null, l
         if (remote) {
           // Supabase punya state: sinkronkan juga ke file lokal (backup).
           saveToFile(stateFile, remote);
+          lastError = null;
           return remote;
         }
         // Baris Supabase kosong: pakai state lokal (dibuat dari seed kalau
         // belum ada), lalu simpan ke Supabase supaya lain kali terisi.
         const local = loadFromFile(stateFile, seedFile);
         await saveToSupabase(local);
+        lastError = null;
         return local;
       } catch (err) {
+        lastError = sanitizeErrorMessage(err.message);
         logger.warn(`[store] Supabase tidak terjangkau, memakai file lokal: ${err.message}`);
       }
     }
@@ -115,8 +134,12 @@ export function createStateStore({ stateFile, seedFile, supabaseClient = null, l
     saveToFile(stateFile, state);
     if (!supabase) return Promise.resolve(false);
     return saveToSupabase(state)
-      .then(() => true)
+      .then(() => {
+        lastError = null;
+        return true;
+      })
       .catch((err) => {
+        lastError = sanitizeErrorMessage(err.message);
         logger.warn(
           `[store] Gagal simpan ke Supabase (state tetap tersimpan di file lokal): ${err.message}`
         );
@@ -132,6 +155,11 @@ export function createStateStore({ stateFile, seedFile, supabaseClient = null, l
     },
     get supabaseEnabled() {
       return Boolean(supabase);
+    },
+    // Pesan error Supabase terakhir (string) atau null. Hanya pesan —
+    // tidak pernah berisi nilai kunci (diredaksi di sanitizeErrorMessage).
+    get lastError() {
+      return lastError;
     },
   };
 }

@@ -62,6 +62,21 @@ async function main() {
   // State tes = salinan seed, supaya tes tidak mengubah data asli.
   fs.copyFileSync(path.join(ROOT, "data", "seed.json"), TEST_STATE);
 
+  // --- 0. Penjaga regresi deploy Vercel: package.json TANPA "main"
+  // (dulu "main": "server.js" membuat Vercel membangun server.js sebagai
+  // satu-satunya function /index dan semua route 500), dan server.js
+  // punya default export yang valid sebagai pengaman.
+  {
+    const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
+    check("vercel: package.json tanpa field main", !("main" in pkg));
+    const tmpState = path.join(os.tmpdir(), `mts-export-check-${Date.now()}.json`);
+    process.env.STATE_FILE = tmpState;
+    const mod = await import("../server.js");
+    check("vercel: server.js punya default export function", typeof mod.default === "function");
+    check("vercel: server.js mengekspor handleRequest", typeof mod.handleRequest === "function");
+    try { fs.unlinkSync(tmpState); } catch { /* abaikan */ }
+  }
+
   const server = spawn(process.execPath, ["server.js"], {
     cwd: ROOT,
     env: {

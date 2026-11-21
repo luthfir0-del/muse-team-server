@@ -314,7 +314,10 @@ export async function handleRequest(req, res) {
     const url = new URL(req.url, `http://${req.headers.host}`);
     const pathname = url.pathname;
 
-    if (pathname === "/health") return sendJson(res, 200, { ok: true, agents: AGENT_IDS.length, storage: store.backend, updated: state.updated });
+    // supabaseError: pesan error Supabase terakhir (atau null kalau sehat /
+    // tidak dipakai) — supaya dari /health langsung kelihatan apakah
+    // Supabase bermasalah, tanpa membuka log. Hanya pesan, tanpa kunci.
+    if (pathname === "/health") return sendJson(res, 200, { ok: true, agents: AGENT_IDS.length, storage: store.backend, supabaseError: store.lastError ?? null, updated: state.updated });
 
     if (pathname === "/mcp") return await handleMcp(req, res);
 
@@ -365,6 +368,13 @@ export async function handleRequest(req, res) {
 // ---------------------------------------------------------------- server HTTP (mode lokal)
 // listen() HANYA saat file ini dijalankan langsung (node server.js).
 // Saat diimpor dari function Vercel (api/*.js), server TIDAK dinyalakan.
+//
+// Default export = pengaman: Vercel pernah membangun file ini (dulu lewat
+// field "main" di package.json) sebagai function dan gagal karena tidak ada
+// default export ("Invalid export found in module .../server.mjs").
+// Dengan export ini, kalaupun server.js dibangun sebagai function, export-nya
+// valid dan berfungsi sebagai handler yang sama.
+export default handleRequest;
 const server = http.createServer(handleRequest);
 
 const isMain = Boolean(process.argv[1]) && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);

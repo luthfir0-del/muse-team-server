@@ -57,7 +57,7 @@ cp .env.example .env   # lalu isi dengan kunci acak yang panjang
 
 Buat kunci acak: `openssl rand -hex 24`.
 
-Tes (47 pemeriksaan — 16 end-to-end MCP + 31 penyimpanan Supabase, lihat `TESTS.md`):
+Tes (58 pemeriksaan — 19 end-to-end MCP + 39 penyimpanan Supabase, lihat `TESTS.md`):
 
 ```bash
 npm test
@@ -96,6 +96,12 @@ Langkahnya (sekali saja, ±5 menit):
 Cara memeriksa: buka `https://[URL_SERVER]/health` — kalau `storage`
 berisi `"supabase"`, berarti Supabase aktif. Kalau berisi `"file"`,
 berarti env var belum terpasang (server tetap jalan dari file lokal).
+Kalau `storage` berisi `"supabase"` TAPI `supabaseError` berisi pesan
+(misalnya `"permission denied ..."`), berarti kunci Supabase di env var
+salah/terpotong saat ditempel — ambil ulang service_role key dari
+dashboard Supabase (Settings → API Keys → legacy service_role) dan
+tempel ulang di env var, lalu Redeploy. `supabaseError` hanya berisi
+pesan error, tidak pernah berisi nilai kunci.
 
 ## Deploy ke internet (wajib HTTPS publik)
 
@@ -111,7 +117,13 @@ diimpor dari function. File tipis di `api/` merutekan tiap endpoint ke
 handler yang sama dengan mode lokal (`npm start` tidak berubah).
 `vercel.json` hanya berisi rewrite supaya URL publik tetap `/mcp` dan
 `/health` (bukan `/api/mcp`); dashboard `/` disajikan langsung dari
-`public/index.html`.
+`public/index.html`. **Catatan: `package.json` TIDAK boleh berisi field
+`main`** — dulu `"main": "server.js"` membuat Vercel membangun server.js
+sebagai satu-satunya function `/index` dan semua route 500
+(`FUNCTION_INVOCATION_FAILED`, "Invalid export found in module
+.../server.mjs"). Sebagai pengaman, `server.js` juga punya
+`export default handleRequest`, jadi kalaupun dibangun sebagai function,
+export-nya valid.
 
 1. Push repo ini ke GitHub.
 2. Di [Vercel](https://vercel.com) → **Add New… → Project** → **Import**
@@ -300,8 +312,8 @@ curl -X POST https://[URL_SERVER]/api/messages \
 ## Batasan yang diketahui (jujur)
 
 - **Belum terverifikasi end-to-end dengan 3 akun Muse sungguhan.**
-  Yang dites di sini: MCP client resmi (SDK) + REST + dashboard, 14/14
-  lolos. Langkah tiap akun membuat konektor MCP kustom ada di sisi
+  Yang dites di sini: MCP client resmi (SDK) + REST + dashboard, 58/58
+  lolos (19 MCP + 39 Supabase). Langkah tiap akun membuat konektor MCP kustom ada di sisi
   akun itu dan belum teruji di sini — kalau ada akun yang gagal
   menyambung, laporkan pesan errornya.
 - Muse tidak punya REST API publik; jalurnya **MCP via HTTPS**. Kalau

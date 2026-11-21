@@ -212,6 +212,65 @@ async function main() {
         loaded?.agents.find((a) => a.id === "ell").currentActivity === "Tetap dari file");
       check("supabase gagal baca: peringatan dicatat",
         warnings.some((w) => /tidak terjangkau/i.test(w)), `(${warnings.join("; ")})`);
+      check("supabase gagal baca: lastError berisi pesan error saja",
+        typeof store.lastError === "string" && store.lastError.includes("select gagal"), `(lastError: ${store.lastError})`);
+    }
+
+    // --- (c1b) lastError: pesan error yang mengandung token diredaksi
+    {
+      const dir = tmpDir(); dirs.push(dir);
+      const warnings = [];
+      const evilFake = {
+        from() {
+          return {
+            select() { return this; },
+            eq() { return this; },
+            async maybeSingle() {
+              throw new Error("permission denied, key eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSJ9.abc123def456");
+            },
+            async upsert() { return { data: null, error: null }; },
+          };
+        },
+      };
+      const store = createStateStore({
+        stateFile: path.join(dir, "state.json"),
+        seedFile: SEED_FILE,
+        supabaseClient: evilFake,
+        logger: collectingLogger(warnings),
+      });
+      let loaded;
+      let threw = false;
+      try { loaded = await store.load(); } catch { threw = true; }
+      check("lastError: load tetap fallback ke file walau pesan mengandung token",
+        threw === false && loaded?.tasks.filter((t) => t.agent === "mas").length === 7);
+      check("lastError: JWT dalam pesan error diredaksi, tidak bocor",
+        typeof store.lastError === "string" &&
+        !store.lastError.includes("eyJ") &&
+        store.lastError.includes("[KUNCI DIREDAKSI]"), `(lastError: ${store.lastError})`);
+    }
+
+    // --- (c1c) lastError: ter-set saat gagal, dibersihkan saat berhasil
+    {
+      const dir = tmpDir(); dirs.push(dir);
+      const fake = new FakeSupabase();
+      fake.rows.set(1, { id: 1, state: seedState(), updated_at: "2026-11-21T10:00:00.000Z" });
+      const store = createStateStore({
+        stateFile: path.join(dir, "state.json"),
+        seedFile: SEED_FILE,
+        supabaseClient: fake,
+        logger: collectingLogger([]),
+      });
+      const loaded = await store.load();
+      check("lastError: null setelah load Supabase berhasil", store.lastError === null);
+      fake.failUpsert = true;
+      loaded.agents[0].currentActivity = "Tes lastError";
+      const wroteFail = await store.persist(loaded);
+      check("lastError: ter-set setelah persist gagal",
+        wroteFail === false && typeof store.lastError === "string" && store.lastError.includes("upsert gagal"),
+        `(lastError: ${store.lastError})`);
+      fake.failUpsert = false;
+      const wroteOk = await store.persist(loaded);
+      check("lastError: dibersihkan setelah persist berhasil", wroteOk === true && store.lastError === null);
     }
 
     // --- (c2) Supabase upsert gagal: persist tetap tulis file, tidak throw
@@ -234,6 +293,8 @@ async function main() {
       try { wrote = await store.persist(loaded); } catch { threw = true; }
       check("supabase gagal tulis: persist tidak melempar", threw === false);
       check("supabase gagal tulis: persist mengembalikan false", wrote === false);
+      check("supabase gagal tulis: lastError ter-set",
+        typeof store.lastError === "string" && store.lastError.includes("upsert gagal"), `(lastError: ${store.lastError})`);
       check("supabase gagal tulis: file lokal tetap diperbarui",
         readJson(path.join(dir, "state.json")).agents.find((a) => a.id === "mas").currentActivity === "Update saat Supabase mati");
       check("supabase gagal tulis: peringatan dicatat",
@@ -265,6 +326,9 @@ async function main() {
         const health = await (await fetch(`${BASE}/health`)).json();
         check("integrasi: /health melaporkan storage supabase (terkonfigurasi)",
           health.storage === "supabase", `(dapat ${health.storage})`);
+        check("integrasi: /health menampilkan supabaseError saat Supabase tidak terjangkau",
+          typeof health.supabaseError === "string" && health.supabaseError.length > 0,
+          `(supabaseError: ${health.supabaseError})`);
         const before = await (await fetch(`${BASE}/api/state`)).json();
         check("integrasi: state dari file (Mas 7 tugas)",
           before.tasks.filter((t) => t.agent === "mas").length === 7);
