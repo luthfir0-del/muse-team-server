@@ -75,6 +75,22 @@ async function main() {
     check("vercel: server.js punya default export function", typeof mod.default === "function");
     check("vercel: server.js mengekspor handleRequest", typeof mod.handleRequest === "function");
     try { fs.unlinkSync(tmpState); } catch { /* abaikan */ }
+
+    // --- 0b. Penjaga regresi ronde 2: tiap rewrite di vercel.json harus
+    // menuju path yang dikenali handleRequest. Dulu /health di-rewrite ke
+    // /api/health dan /mcp ke /api/mcp, tapi handleRequest tidak punya
+    // route /api/health dan /api/mcp — request sampai ke function tapi
+    // jatuh ke 404 {"error":"Tidak ditemukan."} (bukan 500, bukan 404
+    // Vercel). Kalau ada rewrite baru yang tujuannya tidak dikenal,
+    // tes ini gagal sebelum deploy.
+    {
+      const vc = JSON.parse(fs.readFileSync(path.join(ROOT, "vercel.json"), "utf8"));
+      const known = ["/health", "/mcp", "/api/state", "/api/status", "/api/tasks", "/api/messages", "/api/health", "/api/mcp", "/", "/index.html"];
+      const rewrites = vc.rewrites || [];
+      check("vercel: semua tujuan rewrite dikenali handleRequest",
+        rewrites.length > 0 && rewrites.every((r) => known.includes(r.destination)),
+        `(tujuan: ${rewrites.map((r) => r.destination).join(",") || "tidak ada rewrite"})`);
+    }
   }
 
   const server = spawn(process.execPath, ["server.js"], {
@@ -130,6 +146,33 @@ async function main() {
     await initRaw.text();
     check("stateless: initialize tanpa sesi -> 200, tanpa header mcp-session-id",
       initRaw.ok && !initRaw.headers.get("mcp-session-id"), `(status ${initRaw.status})`);
+
+    // --- 2c. Alias /api/* (ronde 2): /api/health dan /api/mcp harus
+    // dijawab handleRequest, karena vercel.json me-rewrite /health ->
+    // /api/health dan /mcp -> /api/mcp. Di deployment Vercel saat ini
+    // hanya ada 1 function (/index) yang menerima semua request.
+    const apiHealth = await fetch(`${BASE}/api/health`);
+    const apiHealthBody = await apiHealth.json().catch(() => ({}));
+    check("alias: GET /api/health -> 200 ok:true",
+      apiHealth.ok && apiHealthBody.ok === true, `(status ${apiHealth.status})`);
+
+    const initApiRaw = await fetch(`${BASE}/api/mcp`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json, text/event-stream",
+        Authorization: `Bearer ${KEYS.ell}`,
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "tes-stateless-api", version: "1.0.0" } },
+      }),
+    });
+    await initApiRaw.text();
+    check("alias: POST /api/mcp initialize -> 200, tanpa header mcp-session-id",
+      initApiRaw.ok && !initApiRaw.headers.get("mcp-session-id"), `(status ${initApiRaw.status})`);
 
     // --- 3. Ell update status sendiri via MCP -> state berubah
     await ell.callTool({ name: "update_my_status", arguments: { activity: "Tes otomatis — render uji", detail: "Status diubah oleh tes end-to-end." } });

@@ -124,6 +124,17 @@ sebagai satu-satunya function `/index` dan semua route 500
 .../server.mjs"). Sebagai pengaman, `server.js` juga punya
 `export default handleRequest`, jadi kalaupun dibangun sebagai function,
 export-nya valid.
+**Ronde 2 (21 Nov):** setelah `main` dihapus, deployment Vercel tetap
+hanya membangun **1 function (`/index`, server.js)** — keenam file
+`api/*` tidak dibangun sebagai function, dan semua request dilayani
+function `/index` itu. Karena `vercel.json` me-rewrite `/health` →
+`/api/health` dan `/mcp` → `/api/mcp`, `handleRequest` **wajib**
+mengenali kedua ejaan itu: ada alias `/api/health` dan `/api/mcp` di
+route-nya (lihat `server.js`). Jadi semua endpoint bisa dijangkau lewat
+satu function maupun lewat `api/*` — dan tes otomatis menjaga rewrite
+di `vercel.json` tidak pernah menunjuk ke path yang tidak dikenali.
+Model satu function ini justru sesuai anjuran Vercel sendiri (satu
+shared entry point, lebih sedikit function yang di-build).
 
 1. Push repo ini ke GitHub.
 2. Di [Vercel](https://vercel.com) → **Add New… → Project** → **Import**

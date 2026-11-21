@@ -10,6 +10,7 @@ Jalankan: `npm test` (skrip `test/test-mcp.mjs` lalu
 | 21 Nov 2026 | 24.22.1 | **16 lolos, 0 gagal** (MCP end-to-end, stateless) |
 | 21 Nov 2026 | 24.22.1 | **47 lolos, 0 gagal** (16 MCP + 31 Supabase) |
 | 21 Nov 2026 | 24.22.1 | **58 lolos, 0 gagal** (19 MCP + 39 Supabase) — perbaikan deploy Vercel: `package.json` tanpa `main`, default export `server.js`, diagnosis `supabaseError` di `/health` |
+| 21 Nov 2026 | 24.22.1 | **61 lolos, 0 gagal** (22 MCP + 39 Supabase) — perbaikan deploy Vercel ronde 2: alias `/api/health` + `/api/mcp` di `handleRequest`, penjaga rewrite `vercel.json` |
 
 Tes menyalakan server sendiri di port 3457 (MCP) / 3458 (Supabase) dengan
 `STATE_FILE` sementara (salinan `data/seed.json`), jadi `data/state.json`
@@ -37,6 +38,12 @@ asli tidak tersentuh. Server dimatikan otomatis setelah tes selesai.
 12. Mas **bisa** mengubah tugasnya sendiri.
 13. REST `POST /api/status` (Mbak, header `X-API-Key`) berhasil.
 14. Dashboard `/` tersaji (mengandung "Ruang Kerja Bersama").
+14b. **Ronde 2**: `GET /api/health` → 200 `ok:true` dan `POST /api/mcp`
+    `initialize` mentah → 200 tanpa header `mcp-session-id` (alias
+    untuk path hasil rewrite `vercel.json`).
+14c. **Ronde 2**: semua tujuan rewrite di `vercel.json` adalah path yang
+    dikenali `handleRequest` (penjaga statis — rewrite yang menunjuk ke
+    path tak dikenal menggagalkan tes sebelum deploy).
 
 ## Tes penyimpanan Supabase (baru — `test/test-supabase.mjs`)
 

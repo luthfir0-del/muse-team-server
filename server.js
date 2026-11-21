@@ -317,9 +317,18 @@ export async function handleRequest(req, res) {
     // supabaseError: pesan error Supabase terakhir (atau null kalau sehat /
     // tidak dipakai) — supaya dari /health langsung kelihatan apakah
     // Supabase bermasalah, tanpa membuka log. Hanya pesan, tanpa kunci.
-    if (pathname === "/health") return sendJson(res, 200, { ok: true, agents: AGENT_IDS.length, storage: store.backend, supabaseError: store.lastError ?? null, updated: state.updated });
+    //
+    // ALIAS /api/* (ronde 2): vercel.json me-rewrite /health -> /api/health
+    // dan /mcp -> /api/mcp, jadi request bisa sampai dengan path hasil
+    // rewrite. Di deployment Vercel saat ini hanya ada 1 function (/index,
+    // server.js ini) yang menerima SEMUA request, jadi alias ini WAJIB ada
+    // — tanpa alias, /health dan /mcp jatuh ke 404 "Tidak ditemukan."
+    // Kalau Vercel suatu saat membangun api/*.js sebagai 6 function, alias
+    // ini tetap benar: api/health.js dan api/mcp.js sudah men-set req.url
+    // ke /health dan /mcp sebelum memanggil handleRequest.
+    if (pathname === "/health" || pathname === "/api/health") return sendJson(res, 200, { ok: true, agents: AGENT_IDS.length, storage: store.backend, supabaseError: store.lastError ?? null, updated: state.updated });
 
-    if (pathname === "/mcp") return await handleMcp(req, res);
+    if (pathname === "/mcp" || pathname === "/api/mcp") return await handleMcp(req, res);
 
     if (pathname === "/api/state" && req.method === "GET") {
       return sendJson(res, 200, publicState());
