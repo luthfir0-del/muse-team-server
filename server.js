@@ -282,6 +282,19 @@ function sendJson(res, code, obj) {
   res.end(JSON.stringify(obj));
 }
 
+// CORS untuk endpoint publik GET (/api/state, /health, /api/health): supaya
+// halaman lain (misalnya kantor 3D di muse.ai) bisa membaca state tim
+// langsung dari browser. Data ini memang publik (baca saja, tanpa kunci).
+const CORS_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization",
+};
+function sendJsonCors(res, code, obj) {
+  res.writeHead(code, { "Content-Type": "application/json", ...CORS_HEADERS });
+  res.end(JSON.stringify(obj));
+}
+
 async function readJsonBody(req, res) {
   const raw = await readBody(req);
   if (!raw) return {};
@@ -314,6 +327,12 @@ export async function handleRequest(req, res) {
     const url = new URL(req.url, `http://${req.headers.host}`);
     const pathname = url.pathname;
 
+    // Preflight CORS untuk endpoint publik.
+    if (req.method === "OPTIONS" && (pathname === "/api/state" || pathname === "/health" || pathname === "/api/health")) {
+      res.writeHead(204, CORS_HEADERS);
+      return res.end();
+    }
+
     // supabaseError: pesan error Supabase terakhir (atau null kalau sehat /
     // tidak dipakai) — supaya dari /health langsung kelihatan apakah
     // Supabase bermasalah, tanpa membuka log. Hanya pesan, tanpa kunci.
@@ -326,12 +345,12 @@ export async function handleRequest(req, res) {
     // Kalau Vercel suatu saat membangun api/*.js sebagai 6 function, alias
     // ini tetap benar: api/health.js dan api/mcp.js sudah men-set req.url
     // ke /health dan /mcp sebelum memanggil handleRequest.
-    if (pathname === "/health" || pathname === "/api/health") return sendJson(res, 200, { ok: true, agents: AGENT_IDS.length, storage: store.backend, supabaseError: store.lastError ?? null, updated: state.updated });
+    if (pathname === "/health" || pathname === "/api/health") return sendJsonCors(res, 200, { ok: true, agents: AGENT_IDS.length, storage: store.backend, supabaseError: store.lastError ?? null, updated: state.updated });
 
     if (pathname === "/mcp" || pathname === "/api/mcp") return await handleMcp(req, res);
 
     if (pathname === "/api/state" && req.method === "GET") {
-      return sendJson(res, 200, publicState());
+      return sendJsonCors(res, 200, publicState());
     }
 
     if (pathname === "/api/status" && req.method === "POST") {
