@@ -7,8 +7,8 @@ Jalankan: `npm test` (skrip `test/test-mcp.mjs` lalu
 
 | Tanggal | Node | Hasil |
 |---|---|---|
-| 21 Nov 2026 | 24.22.1 | **14 lolos, 0 gagal** (MCP end-to-end) |
-| 21 Nov 2026 | 24.22.1 | **45 lolos, 0 gagal** (14 MCP + 31 Supabase) |
+| 21 Nov 2026 | 24.22.1 | **16 lolos, 0 gagal** (MCP end-to-end, stateless) |
+| 21 Nov 2026 | 24.22.1 | **47 lolos, 0 gagal** (16 MCP + 31 Supabase) |
 
 Tes menyalakan server sendiri di port 3457 (MCP) / 3458 (Supabase) dengan
 `STATE_FILE` sementara (salinan `data/seed.json`), jadi `data/state.json`
@@ -22,10 +22,15 @@ asli tidak tersentuh. Server dimatikan otomatis setelah tes selesai.
 4. Seed termuat benar: Mbak 0 tugas, status pending.
 5. MCP `tools/list`: 5 tool (`get_state`, `update_my_status`,
    `upsert_my_task`, `set_task_status`, `send_message`).
+5b. **Stateless**: `initialize` mentah (tanpa sesi) → 200 dan respons
+   **tanpa** header `mcp-session-id` (server tidak membuat sesi).
 6. MCP `update_my_status` (Ell) mengubah state.
 7. MCP `set_task_status` pada tugas sendiri berhasil.
 8. MCP `upsert_my_task` (tugas baru) berhasil.
 9. MCP `send_message` ke ruang tim tersimpan.
+9b. **Stateless**: client MCP **baru** (tanpa sesi apa pun) memanggil
+   `get_state` dan melihat status + pesan yang ditulis Ell — tiap
+   request berdiri sendiri, tidak ada afinitas sesi.
 10. Kunci API salah ditolak (HTTP 401).
 11. Mas **tidak bisa** mengubah tugas Ell (server menolak).
 12. Mas **bisa** mengubah tugasnya sendiri.

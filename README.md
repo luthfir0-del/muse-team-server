@@ -57,7 +57,7 @@ cp .env.example .env   # lalu isi dengan kunci acak yang panjang
 
 Buat kunci acak: `openssl rand -hex 24`.
 
-Tes (45 pemeriksaan — 14 end-to-end MCP + 31 penyimpanan Supabase, lihat `TESTS.md`):
+Tes (47 pemeriksaan — 16 end-to-end MCP + 31 penyimpanan Supabase, lihat `TESTS.md`):
 
 ```bash
 npm test
@@ -82,8 +82,9 @@ Langkahnya (sekali saja, ±5 menit):
    - **Project URL** → jadi `SUPABASE_URL`
    - **service_role key** (bagian "Project API keys", yang ada label
      `service_role`) → jadi `SUPABASE_SERVICE_KEY`
-4. Di Render (atau Railway) → halaman service → **Environment** →
-   tambah kedua variable itu. Deploy ulang kalau perlu.
+4. Di Vercel (atau Render/Railway) → halaman project → **Settings →
+   Environment Variables** → tambah kedua variable itu. Deploy ulang
+   kalau perlu.
 
 > **service_role key itu RAHASIA dan hanya untuk server.** Jangan pernah
 > menaruhnya di kode, di `.env` yang di-commit, di chat, atau di browser.
@@ -101,7 +102,42 @@ berarti env var belum terpasang (server tetap jalan dari file lokal).
 Muse di akun lain hanya bisa menyambung kalau server punya URL HTTPS publik.
 `localhost` tidak bisa dijangkau mereka.
 
-### Opsi A — Render gratis (paling gampang)
+### Opsi A — Vercel Hobby (dipakai sekarang, gratis, tanpa kartu)
+
+Server ini sudah diadaptasi untuk Vercel: MCP **stateless** (tanpa sesi
+di memori — tiap `POST /mcp` berdiri sendiri), state dimuat ulang dari
+store di awal setiap request, dan `server.js` tidak `listen()` saat
+diimpor dari function. File tipis di `api/` merutekan tiap endpoint ke
+handler yang sama dengan mode lokal (`npm start` tidak berubah).
+`vercel.json` hanya berisi rewrite supaya URL publik tetap `/mcp` dan
+`/health` (bukan `/api/mcp`); dashboard `/` disajikan langsung dari
+`public/index.html`.
+
+1. Push repo ini ke GitHub.
+2. Di [Vercel](https://vercel.com) → **Add New… → Project** → **Import**
+   repo ini → **Deploy**. Plan **Hobby** (gratis, **tidak butuh kartu
+   kredit**).
+3. Di halaman project → **Settings → Environment Variables** → isi lima
+   variable: `MAS_API_KEY`, `MBAK_API_KEY`, `ELL_API_KEY` (kunci acak,
+   beda-beda) plus `SUPABASE_URL` dan `SUPABASE_SERVICE_KEY` (lihat
+   bagian Supabase di atas — **di Vercel keduanya WAJIB**: file lokal
+   hanya singgah di `/tmp` dan tidak dibagikan antar instance serverless,
+   jadi tanpa Supabase state tidak awet).
+4. **Redeploy** (tab Deployments → ⋯ → Redeploy) supaya env var
+   terpasang. URL jadinya misal `https://muse-team-server.vercel.app`.
+   MCP endpoint: `https://muse-team-server.vercel.app/mcp`
+   Dashboard: `https://muse-team-server.vercel.app/`
+
+> **Catatan Vercel Hobby, jujur saja:**
+> - Function serverless **tidak tidur** seperti Render gratis — tapi
+>   ada cold start (biasanya hitungan detik) kalau lama tidak ada trafik.
+> - Timeout function Hobby **10 detik** per request — cukup untuk server
+>   ini (tiap request hanya satu-dua operasi Supabase + respons JSON).
+> - State selalu dimuat ulang dari Supabase di awal request, jadi data
+>   yang dilihat tiap agent selalu yang terbaru, walau request-nya
+>   dilayani instance yang berbeda.
+
+### Opsi B — Render gratis (butuh kartu kredit)
 
 1. Push repo ini ke GitHub.
 2. Di [Render](https://render.com) → **New +** → **Blueprint** → pilih repo
@@ -114,7 +150,10 @@ Muse di akun lain hanya bisa menyambung kalau server punya URL HTTPS publik.
    MCP endpoint: `https://muse-team-server.onrender.com/mcp`
    Dashboard: `https://muse-team-server.onrender.com/`
 
-> **Caveat Render gratis, jujur saja:**
+> **Render sekarang meminta kartu kredit** (otorisasi sementara $1,
+> dikembalikan) bahkan untuk paket Free — tanpa kartu, tombol Deploy
+> tidak bisa diklik. Karena itu Vercel jadi jalur utama.
+> Caveat Render gratis, jujur saja:
 > - Service **tidur setelah ~15 menit tidak ada trafik**; request pertama
 >   setelah tidur butuh ~1 menit untuk bangun. Dashboard dan MCP tetap
 >   jalan, hanya lambat di awal. Solusi: upgrade ke paket berbayar,
@@ -124,14 +163,24 @@ Muse di akun lain hanya bisa menyambung kalau server punya URL HTTPS publik.
 >   bangun. Tanpa Supabase, disk Render gratis itu ephemeral: tiap
 >   restart/deploy, isi `data/state.json` kembali ke seed 21 Nov 2026.
 
-### Opsi B — Railway
+### Opsi C — Railway (butuh kartu untuk trial)
 
 1. **New Project** → **Deploy from GitHub** → pilih repo ini.
 2. Tambahkan variable `MAS_API_KEY`, `MBAK_API_KEY`, `ELL_API_KEY`.
 3. Railway memberi domain publik otomatis. MCP endpoint:
    `https://<domain-railway>/mcp`.
 
-### Opsi C — Lokal + Cloudflare Tunnel (tanpa deploy)
+### Host yang sudah dicoba dan TERBLOKIR
+
+- **Koyeb** (dicoba 21 Nov 2026): setelah diakuisisi Mistral AI
+  (Feb 2026), paket Starter gratis **dihapus untuk akun baru** — pengguna
+  baru wajib Pro + metode pembayaran; konsol bahkan tidak menampilkan
+  menu pembuatan service. Jangan coba lagi tanpa kartu.
+- **Hugging Face Spaces (Docker)** (dicoba 21 Nov 2026): Space Docker
+  sekarang **PRO-only** (berbayar); tier gratis hanya untuk Gradio/
+  Streamlit/Static. Jangan coba lagi untuk repo ini.
+
+### Opsi D — Lokal + Cloudflare Tunnel (tanpa deploy)
 
 ```bash
 npm start
@@ -145,7 +194,7 @@ harus tetap menyala.
 ## Cara tiap agent join (pesan yang EL kirim)
 
 Ganti `[URL_SERVER]` dengan URL deploy (misal
-`https://muse-team-server.onrender.com`) dan `[KUNCI_...]` dengan kunci
+`https://muse-team-server.vercel.app`) dan `[KUNCI_...]` dengan kunci
 agent itu. **Kirim tiap pesan hanya ke agent yang bersangkutan** — jangan
 pernah kirim kunci Mas ke Mbak, dan sebaliknya.
 
@@ -259,8 +308,12 @@ curl -X POST https://[URL_SERVER]/api/messages \
   sebuah akun Muse ternyata tidak bisa membuat konektor MCP kustom,
   jalur itu tidak bisa dipaksa — fallback-nya tetap relay lewat EL.
 - Render gratis tidur (~1 menit untuk bangun setelah ~15 menit tanpa
-  trafik). Disk ephemeral tidak lagi jadi masalah kalau Supabase
-  terpasang — tanpa Supabase, state reset ke seed tiap restart.
+  trafik) dan sekarang **meminta kartu kredit** — lihat Opsi B. Disk
+  ephemeral tidak lagi jadi masalah kalau Supabase terpasang — tanpa
+  Supabase, state reset ke seed tiap restart.
+- Vercel Hobby: timeout function 10 detik per request (cukup untuk
+  server ini) dan cold start hitungan detik. **Supabase wajib** di
+  Vercel — tanpa itu state tidak awet antar instance serverless.
 - Belum ada ruang 3D — dashboard dulu. Ruang 3D baru dibangun setelah
   shared state terbukti jalan di ketiga akun.
 - Tidak ada fitur hapus agent / rotasi kunci lewat tool — rotasi kunci
@@ -270,7 +323,12 @@ curl -X POST https://[URL_SERVER]/api/messages \
 
 ```text
 muse-team-server/
-├── server.js          # HTTP + MCP (streamable HTTP) + REST + dashboard
+├── server.js          # HTTP + MCP (streamable HTTP, stateless) + REST + dashboard
+│                      # mengekspor handleRequest() untuk function Vercel;
+│                      # listen() hanya saat dijalankan langsung (npm start)
+├── api/               # Function Vercel (tipis): mcp.js, health.js, state.js,
+│                      # status.js, tasks.js, messages.js — merutekan ke handleRequest()
+├── vercel.json        # Rewrite /mcp -> /api/mcp dan /health -> /api/health
 ├── store.js           # Penyimpanan state: Supabase (kalau dikonfigurasi) + file lokal (fallback)
 ├── supabase.sql       # CREATE TABLE team_state — jalankan sekali di SQL Editor Supabase
 ├── data/

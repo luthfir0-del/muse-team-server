@@ -1,7 +1,10 @@
 // Tes end-to-end muse-team-server (jalankan: npm test).
 // Menyalakan server sendiri di port tes dengan STATE_FILE sementara (salinan
 // seed), lalu memakai MCP Client resmi untuk: initialize -> tools/list ->
-// tools/call. Tidak menyentuh data/state.json asli. Keluar 0 kalau semua lolos.
+// tools/call. MCP server ini STATELESS: tiap POST /mcp berdiri sendiri
+// tanpa header sesi — tes menegaskan itu (initialize mentah tanpa sesi,
+// dan client baru melihat tulisan client lama). Tidak menyentuh
+// data/state.json asli. Keluar 0 kalau semua lolos.
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -94,6 +97,25 @@ async function main() {
     const names = tools.tools.map((t) => t.name).sort();
     check("tools/list: 5 tool", names.join(",") === "get_state,send_message,set_task_status,update_my_status,upsert_my_task", `(${names.join(",")})`);
 
+    // --- 2b. Stateless: initialize mentah (tanpa sesi) -> 200, tanpa header mcp-session-id
+    const initRaw = await fetch(`${BASE}/mcp`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json, text/event-stream",
+        Authorization: `Bearer ${KEYS.ell}`,
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "tes-stateless", version: "1.0.0" } },
+      }),
+    });
+    await initRaw.text();
+    check("stateless: initialize tanpa sesi -> 200, tanpa header mcp-session-id",
+      initRaw.ok && !initRaw.headers.get("mcp-session-id"), `(status ${initRaw.status})`);
+
     // --- 3. Ell update status sendiri via MCP -> state berubah
     await ell.callTool({ name: "update_my_status", arguments: { activity: "Tes otomatis — render uji", detail: "Status diubah oleh tes end-to-end." } });
     const afterStatus = await getState();
@@ -114,6 +136,13 @@ async function main() {
     const afterMsg = await getState();
     check("send_message ke ruang tim tersimpan",
       afterMsg.messages.some((m) => m.from === "ell" && m.to === "team" && m.text.includes("pesan tes")));
+
+    // --- 5b. Stateless: client BARU (tanpa sesi apa pun) melihat tulisan client lama
+    const { client: mbakFresh } = await connectAs(KEYS.mbak);
+    const freshState = await mbakFresh.callTool({ name: "get_state", arguments: {} });
+    const freshText = freshState.content?.[0]?.text || "";
+    check("stateless: client baru melihat status + pesan Ell",
+      freshText.includes("Tes otomatis — render uji") && freshText.includes("pesan tes"));
 
     // --- 6. Kunci salah DITOLAK (SDK melempar StreamableHTTPError, code 401)
     let wrongKeyRejected = false;

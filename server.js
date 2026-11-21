@@ -2,14 +2,20 @@
 // Tiap agent join sendiri lewat konektor MCP + kunci API-nya, lalu update
 // status dan tugasnya SENDIRI. Server tidak pernah menjawab atas nama agent lain.
 //
-// Jalankan:  npm install && npm start
-// MCP:       POST /mcp  (streamable HTTP, auth: Bearer <kunci-agent>)
+// Jalankan lokal:  npm install && npm start
+// MCP:       POST /mcp  (streamable HTTP, stateless, auth: Bearer <kunci-agent>)
 // REST:      GET  /api/state  (publik, baca saja)
 //            POST /api/status | /api/tasks | /api/messages  (auth: Bearer / X-API-Key)
 // Dashboard: GET  /
+//
+// Deploy Vercel: api/*.js merutekan ke handleRequest() di file ini — server
+// tidak pernah listen() saat diimpor dari function. MCP dibuat STATELESS
+// (tanpa sesi di memori) supaya tiap request serverless berdiri sendiri;
+// state dimuat ulang dari store di awal setiap request.
 
 import http from "node:http";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
@@ -23,7 +29,11 @@ const PORT = Number(process.env.PORT || 3000);
 const DATA_DIR = path.join(__dirname, "data");
 // STATE_FILE bisa di-override lewat env (dipakai tes otomatis supaya tidak
 // mengotori data/state.json). Default: data/state.json di samping seed.json.
-const STATE_FILE = process.env.STATE_FILE || path.join(DATA_DIR, "state.json");
+// Di Vercel (disk read-only kecuali /tmp), file lokal jatuh ke /tmp —
+// sekadar cache; sumber kebenaran di sana tetap Supabase (wajib di-set).
+const STATE_FILE =
+  process.env.STATE_FILE ||
+  (process.env.VERCEL ? path.join(os.tmpdir(), "muse-team-state.json") : path.join(DATA_DIR, "state.json"));
 const SEED_FILE = path.join(DATA_DIR, "seed.json");
 const PUBLIC_DIR = path.join(__dirname, "public");
 
@@ -93,26 +103,27 @@ function publicState() {
   };
 }
 
-function touch() {
+// touch() DITUNGGU (await) oleh pemanggil sebelum respons dikirim — penting
+// di serverless (Vercel): function bisa dibekukan begitu respons selesai,
+// jadi upsert Supabase harus selesai dulu, bukan fire-and-forget.
+async function touch() {
   state.updated = new Date().toISOString();
-  // persist() menulis file lokal dulu (sinkron — error disk dilempar seperti
-  // dulu) lalu upsert ke Supabase di latar belakang (gagalnya hanya dicatat).
-  void store.persist(state);
+  await store.persist(state);
 }
 
 // ------------------------------------------------------- logika bisnis (dipakai MCP + REST)
-function doUpdateStatus(agentId, { activity, detail }) {
+async function doUpdateStatus(agentId, { activity, detail }) {
   const row = agentRow(agentId);
   if (activity !== undefined) row.currentActivity = activity;
   if (detail !== undefined) row.statusDetail = detail;
   row.status = "connected";
   if (!row.connectedAt) row.connectedAt = new Date().toISOString();
   logActivity(agentId, `${row.name} update status: ${row.currentActivity}`);
-  touch();
+  await touch();
   return { ok: true, agent: publicState().agents.find((a) => a.id === agentId) };
 }
 
-function doUpsertTask(agentId, { id, title, detail, time, status }) {
+async function doUpsertTask(agentId, { id, title, detail, time, status }) {
   if (id) {
     const existing = state.tasks.find((t) => t.id === id);
     if (existing) {
@@ -124,7 +135,7 @@ function doUpsertTask(agentId, { id, title, detail, time, status }) {
       if (time !== undefined) existing.time = time;
       if (status !== undefined) existing.status = status;
       logActivity(agentId, `${agentRow(agentId).name} mengubah tugas "${existing.title}"`);
-      touch();
+      await touch();
       return { ok: true, task: existing };
     }
   }
@@ -138,11 +149,11 @@ function doUpsertTask(agentId, { id, title, detail, time, status }) {
   };
   state.tasks.push(task);
   logActivity(agentId, `${agentRow(agentId).name} menambah tugas "${task.title}"`);
-  touch();
+  await touch();
   return { ok: true, task };
 }
 
-function doSetTaskStatus(agentId, { id, status }) {
+async function doSetTaskStatus(agentId, { id, status }) {
   const task = state.tasks.find((t) => t.id === id);
   if (!task) throw new Error(`Tugas "${id}" tidak ditemukan.`);
   if (task.agent !== agentId) {
@@ -150,11 +161,11 @@ function doSetTaskStatus(agentId, { id, status }) {
   }
   task.status = status;
   logActivity(agentId, `${agentRow(agentId).name} mengubah status "${task.title}" → ${status}`);
-  touch();
+  await touch();
   return { ok: true, task };
 }
 
-function doSendMessage(agentId, { to, text }) {
+async function doSendMessage(agentId, { to, text }) {
   if (to !== "team" && !AGENT_IDS.includes(to)) {
     throw new Error(`Tujuan pesan tidak dikenal: "${to}". Pakai "team" atau id agent (mas/mbak/ell).`);
   }
@@ -163,7 +174,7 @@ function doSendMessage(agentId, { to, text }) {
   if (state.messages.length > 500) state.messages = state.messages.slice(-500);
   const target = to === "team" ? "ruang tim" : `DM ${agentRow(to).name}`;
   logActivity(agentId, `${agentRow(agentId).name} mengirim pesan ke ${target}`);
-  touch();
+  await touch();
   return { ok: true, message: msg };
 }
 
@@ -183,7 +194,7 @@ function createMcpServer(agentId) {
     "update_my_status",
     `Update status KAMU (${me}) saja: aktivitas yang sedang dikerjakan sekarang dan detail status. Otomatis menandai kamu Terhubung.`,
     { activity: z.string().min(1).describe("Aktivitas yang sedang kamu kerjakan sekarang"), detail: z.string().optional().describe("Detail status (opsional)") },
-    async ({ activity, detail }) => ({ content: [{ text: JSON.stringify(doUpdateStatus(agentId, { activity, detail })), type: "text" }] })
+    async ({ activity, detail }) => ({ content: [{ text: JSON.stringify(await doUpdateStatus(agentId, { activity, detail })), type: "text" }] })
   );
 
   server.tool(
@@ -196,29 +207,30 @@ function createMcpServer(agentId) {
       time: z.string().optional().describe("Jam/waktu tugas, misal 19:00"),
       title: z.string().min(1).describe("Judul tugas"),
     },
-    async (args) => ({ content: [{ text: JSON.stringify(doUpsertTask(agentId, args)), type: "text" }] })
+    async (args) => ({ content: [{ text: JSON.stringify(await doUpsertTask(agentId, args)), type: "text" }] })
   );
 
   server.tool(
     "set_task_status",
     `Ubah status salah satu tugas KAMU (${me}) saja. Status yang sah: done, in_progress, pending, ready, blocked, scheduled.`,
     { id: z.string().describe("ID tugas"), status: z.enum(TASK_STATUSES) },
-    async ({ id, status }) => ({ content: [{ text: JSON.stringify(doSetTaskStatus(agentId, { id, status })), type: "text" }] })
+    async ({ id, status }) => ({ content: [{ text: JSON.stringify(await doSetTaskStatus(agentId, { id, status })), type: "text" }] })
   );
 
   server.tool(
     "send_message",
     `Kirim pesan ke ruang tim ("team") atau DM ke satu agent ("mas"/"mbak"/"ell"). Pesan ke agent lain hanya DISIMPAN untuk mereka — server tidak pernah membalas atas nama siapa pun.`,
     { text: z.string().min(1).describe("Isi pesan"), to: z.string().describe('"team" atau id agent tujuan (mas/mbak/ell)') },
-    async ({ text, to }) => ({ content: [{ text: JSON.stringify(doSendMessage(agentId, { text, to })), type: "text" }] })
+    async ({ text, to }) => ({ content: [{ text: JSON.stringify(await doSendMessage(agentId, { text, to })), type: "text" }] })
   );
 
   return server;
 }
 
-// Satu McpServer + transport per sesi MCP. Sesi terikat ke agent pemilik kunci.
-const sessions = new Map(); // sessionId -> { transport, agentId }
-
+// MCP STATELESS: satu McpServer + transport BARU per request POST.
+// Tanpa sessionIdGenerator, tanpa Map sesi, tanpa GET/DELETE berbasis sesi.
+// Tiap request berdiri sendiri — wajib di serverless (Vercel), di mana
+// tiap request bisa jadi proses baru dan memori tidak dibagikan.
 async function handleMcp(req, res) {
   const agentId = authAgent(req);
   if (!agentId) {
@@ -227,42 +239,19 @@ async function handleMcp(req, res) {
     return;
   }
 
-  const sessionId = req.headers["mcp-session-id"];
-  let entry = typeof sessionId === "string" ? sessions.get(sessionId) : undefined;
-
-  if (req.method === "GET" || req.method === "DELETE") {
-    if (!entry) {
-      res.writeHead(404, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "Sesi MCP tidak ditemukan. Mulai dengan POST /mcp dulu." }));
-      return;
-    }
-    if (entry.agentId !== agentId) {
-      res.writeHead(403, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "Sesi ini milik agent lain." }));
-      return;
-    }
-    if (req.method === "DELETE") sessions.delete(sessionId);
-    await entry.transport.handleRequest(req, res);
+  if (req.method !== "POST") {
+    res.writeHead(405, { Allow: "POST", "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "MCP stateless: hanya POST yang didukung." }));
     return;
   }
 
-  // POST: buat sesi baru kalau belum ada
-  if (!entry) {
-    const server = createMcpServer(agentId);
-    const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: () => randomUUID(),
-      onsessioninitialized: (id) => sessions.set(id, { agentId, transport }),
-    });
-    transport.onclose = () => {
-      for (const [id, e] of sessions) if (e.transport === transport) sessions.delete(id);
-    };
-    await server.connect(transport);
-    entry = { agentId, transport };
-  } else if (entry.agentId !== agentId) {
-    res.writeHead(403, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: "Sesi ini milik agent lain." }));
-    return;
-  }
+  const server = createMcpServer(agentId);
+  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+  res.on("close", () => {
+    transport.close().catch(() => {});
+    server.close().catch(() => {});
+  });
+  await server.connect(transport);
 
   let body;
   const raw = await readBody(req);
@@ -275,7 +264,7 @@ async function handleMcp(req, res) {
       return;
     }
   }
-  await entry.transport.handleRequest(req, res, body);
+  await transport.handleRequest(req, res, body);
 }
 
 // ---------------------------------------------------------------- util HTTP
@@ -313,21 +302,21 @@ function requireAuth(req, res) {
   return agentId;
 }
 
-// ---------------------------------------------------------------- server HTTP
-const server = http.createServer(async (req, res) => {
+// ---------------------------------------------------------------- handler HTTP
+// Diekspor supaya function serverless (api/*.js di Vercel) bisa memakainya
+// tanpa menyalakan server. Di awal SETIAP request, state dimuat ulang dari
+// store — supaya lambda yang baru bangun tidak menyajikan atau menimpa
+// state basi (state terbaru selalu di Supabase / file).
+export async function handleRequest(req, res) {
   try {
+    state = await store.load();
+
     const url = new URL(req.url, `http://${req.headers.host}`);
     const pathname = url.pathname;
 
     if (pathname === "/health") return sendJson(res, 200, { ok: true, agents: AGENT_IDS.length, storage: store.backend, updated: state.updated });
 
-    if (pathname === "/mcp") {
-      if (!["POST", "GET", "DELETE"].includes(req.method)) {
-        res.writeHead(405);
-        return res.end();
-      }
-      return await handleMcp(req, res);
-    }
+    if (pathname === "/mcp") return await handleMcp(req, res);
 
     if (pathname === "/api/state" && req.method === "GET") {
       return sendJson(res, 200, publicState());
@@ -338,7 +327,7 @@ const server = http.createServer(async (req, res) => {
       if (!agentId) return;
       const body = await readJsonBody(req, res);
       if (body === null) return;
-      return sendJson(res, 200, doUpdateStatus(agentId, body));
+      return sendJson(res, 200, await doUpdateStatus(agentId, body));
     }
 
     if (pathname === "/api/tasks" && req.method === "POST") {
@@ -348,7 +337,7 @@ const server = http.createServer(async (req, res) => {
       if (body === null) return;
       // Hanya {id, status} tanpa judul/detail/waktu -> ubah status saja.
       const onlyStatus = body.id && body.status && !body.title && !body.detail && !body.time;
-      return sendJson(res, 200, onlyStatus ? doSetTaskStatus(agentId, body) : doUpsertTask(agentId, body));
+      return sendJson(res, 200, onlyStatus ? await doSetTaskStatus(agentId, body) : await doUpsertTask(agentId, body));
     }
 
     if (pathname === "/api/messages" && req.method === "POST") {
@@ -356,7 +345,7 @@ const server = http.createServer(async (req, res) => {
       if (!agentId) return;
       const body = await readJsonBody(req, res);
       if (body === null) return;
-      return sendJson(res, 200, doSendMessage(agentId, body));
+      return sendJson(res, 200, await doSendMessage(agentId, body));
     }
 
     if ((pathname === "/" || pathname === "/index.html") && req.method === "GET") {
@@ -371,20 +360,28 @@ const server = http.createServer(async (req, res) => {
     console.error("[error]", err);
     if (!res.headersSent) sendJson(res, 500, { error: String(err?.message || err) });
   }
-});
+}
 
-server.listen(PORT, "0.0.0.0", () => {
-  console.log(`muse-team-server jalan di http://localhost:${PORT}`);
-  console.log(`MCP: POST http://localhost:${PORT}/mcp   Dashboard: http://localhost:${PORT}/`);
-  console.log(
-    store.backend === "supabase"
-      ? "State: Supabase (awet — tahan restart/tidur di hosting gratis)."
-      : "State: file lokal data/state.json (reset ke seed kalau server restart di hosting gratis; set SUPABASE_URL + SUPABASE_SERVICE_KEY supaya awet)."
-  );
-  if (USING_DEV_KEYS) {
-    console.log("PERINGATAN: memakai KUNCI DEV (dev-mas-key / dev-mbak-key / dev-ell-key).");
-    console.log("Set MAS_API_KEY, MBAK_API_KEY, ELL_API_KEY di env sebelum deploy publik!");
-  } else {
-    console.log("Kunci API dibaca dari env (MAS_API_KEY, MBAK_API_KEY, ELL_API_KEY).");
-  }
-});
+// ---------------------------------------------------------------- server HTTP (mode lokal)
+// listen() HANYA saat file ini dijalankan langsung (node server.js).
+// Saat diimpor dari function Vercel (api/*.js), server TIDAK dinyalakan.
+const server = http.createServer(handleRequest);
+
+const isMain = Boolean(process.argv[1]) && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isMain) {
+  server.listen(PORT, "0.0.0.0", () => {
+    console.log(`muse-team-server jalan di http://localhost:${PORT}`);
+    console.log(`MCP: POST http://localhost:${PORT}/mcp   Dashboard: http://localhost:${PORT}/`);
+    console.log(
+      store.backend === "supabase"
+        ? "State: Supabase (awet — tahan restart/tidur di hosting gratis)."
+        : "State: file lokal data/state.json (reset ke seed kalau server restart di hosting gratis; set SUPABASE_URL + SUPABASE_SERVICE_KEY supaya awet)."
+    );
+    if (USING_DEV_KEYS) {
+      console.log("PERINGATAN: memakai KUNCI DEV (dev-mas-key / dev-mbak-key / dev-ell-key).");
+      console.log("Set MAS_API_KEY, MBAK_API_KEY, ELL_API_KEY di env sebelum deploy publik!");
+    } else {
+      console.log("Kunci API dibaca dari env (MAS_API_KEY, MBAK_API_KEY, ELL_API_KEY).");
+    }
+  });
+}
