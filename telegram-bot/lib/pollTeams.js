@@ -17,7 +17,7 @@
 // local-bot memakai scripts/tg-bridge.mjs) supaya gampang dites.
 
 import { findAnomalies, newEventsSince } from "./diff.js";
-import { formatEventForTeam } from "./format.js";
+import { groupEventParts } from "./format.js";
 import { advanceCursor, createMemoryCursorStore, filterFreshEvents } from "./cursor.js";
 
 export async function pollAllTeams({
@@ -59,7 +59,10 @@ export async function pollAllTeams({
         results.push(result);
         continue;
       }
-      const parts = events.map((ev) => formatEventForTeam(ev, team));
+      // Format ringkas EL: aktivitas berurutan dari agent yang sama
+      // berbagi satu header nama agent (nama agen, lalu satu baris per
+      // tugas + link) — bukan lagi dinding teks status per peristiwa.
+      const parts = groupEventParts(events, team);
       const anomalies = findAnomalies(state);
       if (anomalies.length) {
         parts.push(`\n<b>Perlu perhatian:</b>\n${anomalies.join("\n")}`);

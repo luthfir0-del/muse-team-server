@@ -37,7 +37,108 @@ export function formatEvent(ev) {
     const dest = ev.to === "team" ? "ruang tim" : `DM ${agentName(ev.to)}`;
     return `💬 <b>${escapeHtml(agentName(ev.from))}</b> → ${escapeHtml(dest)} (${fmtTime(ev.time)}):\n${escapeHtml(ev.text)}`;
   }
-  return `📌 <b>${escapeHtml(agentName(ev.agent))}</b> (${fmtTime(ev.time)}): ${escapeHtml(ev.event)}`;
+  return `<b>${escapeHtml(agentName(ev.agent))}</b>\n${formatEventBody(ev)}`;
+}
+
+// Format ringkas EL (28 Nov 2026): notifikasi aktivitas TIDAK BOLEH lagi
+// membuang seluruh teks status (punya Mas bisa 6000+ karakter, isinya
+// pengulangan). Yang dikirim hanya:
+//   nama agen
+//   nama tugas (+ info terbaru, maks ~200 karakter) - link1 - link2
+// Link diambil dari teks itu sendiri (URL penuh atau domain telanjang
+// seperti facebook.com/reel/..., youtube.com/shorts/...).
+
+const LINK_DOMAINS = [
+  "facebook.com",
+  "instagram.com",
+  "youtube.com",
+  "youtu.be",
+  "tiktok.com",
+  "twitter.com",
+  "x.com",
+];
+
+const MAX_ACTIVITY_CHARS = 200;
+const MAX_LINKS = 3;
+
+export function extractLinks(text = "") {
+  const found = [];
+  const push = (u) => {
+    const clean = String(u).replace(/[.,);:'"\]}>]+$/g, "");
+    if (!clean || found.includes(clean) || found.length >= MAX_LINKS) return;
+    found.push(clean);
+  };
+  for (const m of String(text).matchAll(/https?:\/\/[^\s<>"')\]]+/gi)) push(m[0]);
+  const bare = new RegExp(
+    `(?:^|[\\s(])((?:${LINK_DOMAINS.map((d) => d.replace(".", "\\.")).join("|")})/[^\\s<>"')\\]]+)`,
+    "gi"
+  );
+  for (const m of String(text).matchAll(bare)) push(`https://${m[1]}`);
+  return found;
+}
+
+// Padatkan teks aktivitas: buang prefix "Nama update status: " /
+// "Nama mengubah tugas ", buang tanda kutip pembungkus judul tugas,
+// lalu potong ke ~200 karakter di batas kata (info terbaru selalu di
+// awal teks, sisanya pengulangan riwayat).
+export function compactActivityText(text = "") {
+  let t = String(text).trim();
+  t = t.replace(/^\S+\s+update status:\s*/i, "");
+  t = t.replace(/^\S+\s+mengubah tugas\s*/i, "");
+  t = t.replace(/^["“”]/, "").replace(/["”]$/, "");
+  if (t.length > MAX_ACTIVITY_CHARS) {
+    let cut = t.slice(0, MAX_ACTIVITY_CHARS);
+    const sp = cut.lastIndexOf(" ");
+    if (sp > 120) cut = cut.slice(0, sp);
+    t = `${cut}…`;
+  }
+  return t;
+}
+
+// Isi peristiwa aktivitas TANPA header nama agent — dipakai saat beberapa
+// peristiwa dari agent yang sama digabung dalam satu digest (header nama
+// agent cukup sekali, lihat groupEventParts).
+export function formatEventBody(ev) {
+  if (ev.kind === "message") {
+    const dest = ev.to === "team" ? "ruang tim" : `DM ${agentName(ev.to)}`;
+    return `→ ${escapeHtml(dest)} (${fmtTime(ev.time)}):\n${escapeHtml(ev.text)}`;
+  }
+  const raw = ev.event || "";
+  const prose = compactActivityText(raw);
+  const links = extractLinks(raw);
+  const linkPart = links.length ? ` - ${links.map((l) => escapeHtml(l)).join(" - ")}` : "";
+  return `${escapeHtml(prose)}${linkPart}`;
+}
+
+// Gabungkan peristiwa jadi bagian-bagian digest: aktivitas berurutan dari
+// agent yang sama berbagi satu header nama agent (format EL: nama agent,
+// lalu satu baris per tugas + link). Pesan chat tetap berdiri sendiri.
+export function groupEventParts(events, team) {
+  const label = team ? `[${team.name || team.id}] ` : "";
+  const parts = [];
+  let currentAgent = null;
+  let lines = [];
+  const flush = () => {
+    if (lines.length) {
+      parts.push(`${label}<b>${escapeHtml(agentName(currentAgent))}</b>\n${lines.join("\n")}`);
+      lines = [];
+      currentAgent = null;
+    }
+  };
+  for (const ev of events) {
+    if (ev.kind === "activity") {
+      if (ev.agent !== currentAgent) {
+        flush();
+        currentAgent = ev.agent;
+      }
+      lines.push(formatEventBody(ev));
+    } else {
+      flush();
+      parts.push(formatEventForTeam(ev, team));
+    }
+  }
+  flush();
+  return parts;
 }
 
 // Ringkasan status SATU tim untuk /status: tiap agent + aktivitas + progres tugas.
@@ -49,7 +150,7 @@ export function formatStatus(state, team) {
     const conn = a.status === "connected" ? "🟢" : "🔴";
     lines.push(
       `\n${conn} <b>${escapeHtml(a.name)}</b> — ${done}/${total} tugas\n` +
-        `   ${escapeHtml(a.currentActivity || a.statusDetail || "-")}`
+        `   ${escapeHtml(compactActivityText(a.currentActivity || a.statusDetail || "-"))}`
     );
   }
   const blocked = (state.tasks || []).filter((t) => t.status === "blocked");
@@ -72,7 +173,9 @@ export function formatTasks(state, team) {
       continue;
     }
     for (const t of tasks) {
-      lines.push(`   ${TASK_EMOJI[t.status] || "•"} ${escapeHtml(t.title)}${t.time && t.time !== "—" ? ` (${escapeHtml(t.time)})` : ""}`);
+      const links = extractLinks(`${t.title || ""} ${t.detail || ""}`);
+      const linkPart = links.length ? ` - ${links.map((l) => escapeHtml(l)).join(" - ")}` : "";
+      lines.push(`   ${TASK_EMOJI[t.status] || "•"} ${escapeHtml(t.title)}${t.time && t.time !== "—" ? ` (${escapeHtml(t.time)})` : ""}${linkPart}`);
     }
   }
   return lines.join("\n");
