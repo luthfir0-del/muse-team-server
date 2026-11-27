@@ -55,7 +55,6 @@ export async function pollAllTeams({
         console.warn(`[poll] gagal baca cursor tim ${team.id}:`, e.message);
       }
       events = filterFreshEvents(events, cursor).slice(0, maxEventsPerRun);
-      result.forwarded = events.length;
       if (!events.length) {
         results.push(result);
         continue;
@@ -66,6 +65,11 @@ export async function pollAllTeams({
         parts.push(`\n<b>Perlu perhatian:</b>\n${anomalies.join("\n")}`);
       }
       await sendTelegram(team.notifyChatId, parts.join("\n\n"));
+      // Hitung forwarded HANYA setelah kirim berhasil — kalau kirim
+      // gagal (mis. pesan terlalu panjang), log harus 0, bukan jumlah
+      // peristiwa yang coba dikirim (bug log 28 Nov 2026: "forwarded 2"
+      // padahal tidak ada yang sampai ke Telegram).
+      result.forwarded = events.length;
       // Cursor maju HANYA setelah kirim berhasil — kalau kirim gagal,
       // run berikutnya mencoba lagi.
       try {
@@ -74,6 +78,7 @@ export async function pollAllTeams({
         console.warn(`[poll] gagal simpan cursor tim ${team.id}:`, e.message);
       }
     } catch (e) {
+      result.forwarded = 0;
       result.error = e.message;
     }
     results.push(result);

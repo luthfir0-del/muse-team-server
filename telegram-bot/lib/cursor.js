@@ -52,6 +52,7 @@ export function advanceCursor(cursor, forwarded) {
 export function createMemoryCursorStore() {
   const map = new Map();
   return {
+    kind: "memory",
     async load(teamId) {
       return map.get(teamId) || null;
     },
@@ -63,6 +64,7 @@ export function createMemoryCursorStore() {
 
 export function createSupabaseCursorStore(client) {
   return {
+    kind: "supabase",
     async load(teamId) {
       const row = await client.getPollState(teamId);
       if (!row) return null;

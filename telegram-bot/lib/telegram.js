@@ -41,15 +41,46 @@ export function escapeHtml(s) {
     .replace(/>/g, "&gt;");
 }
 
+// Batas teks satu pesan Telegram: 4096 karakter. Digest poll bisa jauh
+// lebih panjang — satu update status Mas saja 3.800-4.800 karakter
+// (terbukti 5x gagal 28 Nov 2026 dengan "message is too long").
+// Potong per baris supaya tag HTML formatter (<b>/<i>/<code>, yang
+// selalu seimbang dalam satu baris) tidak terbelah; baris tunggal yang
+// lebih panjang dari batas dipotong keras.
+export const MAX_TELEGRAM_TEXT = 4000;
+
+export function splitLongText(text, max = MAX_TELEGRAM_TEXT) {
+  const s = String(text ?? "");
+  if (s.length <= max) return [s];
+  const chunks = [];
+  let rest = s;
+  while (rest.length > max) {
+    let cut = rest.lastIndexOf("\n", max);
+    if (cut < 1) cut = max; // tidak ada baris sebelum batas: potong keras
+    chunks.push(rest.slice(0, cut));
+    rest = rest.slice(cut).replace(/^\n/, "");
+  }
+  if (rest) chunks.push(rest);
+  return chunks;
+}
+
 // Kirim pesan teks ke satu chat. Pakai parse_mode HTML (sudah di-escape
 // oleh pemanggil lewat escapeHtml di lib/format.js).
+// Pesan panjang dipecah jadi beberapa pesan berurutan supaya tidak
+// ditolak Telegram (batas 4096 karakter).
 export async function sendTelegram(chatId, text) {
-  return callApi("sendMessage", {
-    chat_id: chatId,
-    text,
-    parse_mode: "HTML",
-    disable_web_page_preview: true,
-  });
+  const parts = splitLongText(text);
+  let last = null;
+  for (let i = 0; i < parts.length; i++) {
+    const part = i < parts.length - 1 ? `${parts[i]}\n<i>(bersambung…)</i>` : parts[i];
+    last = await callApi("sendMessage", {
+      chat_id: chatId,
+      text: part,
+      parse_mode: "HTML",
+      disable_web_page_preview: true,
+    });
+  }
+  return last;
 }
 
 // Hapus satu pesan (dipakai untuk menghapus pesan /gabung yang berisi

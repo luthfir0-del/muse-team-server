@@ -148,6 +148,56 @@ test("poll: tidak ada peristiwa baru -> diam (tidak kirim)", async () => {
   assert.equal(results[0].forwarded, 0);
 });
 
+test("poll: kirim gagal -> forwarded 0 (bukan jumlah peristiwa) dan cursor tidak maju", async () => {
+  const { createMemoryCursorStore } = await import("../lib/cursor.js");
+  const store = createMemoryCursorStore();
+  let attempts = 0;
+  const failingSend = async () => {
+    attempts++;
+    throw new Error("Telegram API sendMessage gagal: HTTP 400 Bad Request: message is too long");
+  };
+  const state = stateFor("raden", [["m1", "mas", "Pesan panjang", 60_000]]);
+  const run1 = await pollAllTeams({
+    registry: registryWith([team()]),
+    fetchState: async () => state,
+    sendTelegram: failingSend,
+    cursorStore: store,
+  });
+  assert.equal(run1[0].forwarded, 0);
+  assert.match(run1[0].error, /message is too long/);
+  // Run kedua mencoba lagi peristiwa yang sama (cursor tidak maju saat gagal).
+  const run2 = await pollAllTeams({
+    registry: registryWith([team()]),
+    fetchState: async () => state,
+    sendTelegram: failingSend,
+    cursorStore: store,
+  });
+  assert.equal(run2[0].forwarded, 0);
+  assert.equal(attempts, 2);
+});
+
+test("poll: peristiwa yang sudah diteruskan tidak dikirim lagi di run berikut (dedup cursor)", async () => {
+  const { createMemoryCursorStore } = await import("../lib/cursor.js");
+  const store = createMemoryCursorStore();
+  const sent = [];
+  const send = async (chatId, text) => {
+    sent.push({ chatId, text });
+  };
+  const state = stateFor("raden", [["m1", "mas", "Render selesai", 60_000]]);
+  const opts = {
+    registry: registryWith([team()]),
+    fetchState: async () => state,
+    sendTelegram: send,
+    cursorStore: store,
+  };
+  const run1 = await pollAllTeams(opts);
+  assert.equal(run1[0].forwarded, 1);
+  assert.equal(sent.length, 1);
+  const run2 = await pollAllTeams(opts);
+  assert.equal(run2[0].forwarded, 0);
+  assert.equal(sent.length, 1); // tidak ada kirim ulang
+});
+
 test("poll: tim yang gagal dibaca tidak memblokir tim lain", async () => {
   const sent = [];
   const results = await pollAllTeams({
