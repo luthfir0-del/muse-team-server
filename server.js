@@ -23,6 +23,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
 import { createStateStore, createSupabaseClient } from "./store.js";
+import { activityEvent, createNotifier, isEchoMessage, messageEvent } from "./notify-bot.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 3000);
@@ -76,9 +77,26 @@ const store = createStateStore({
 
 let state = await store.load();
 
+// Push instan ke bot Telegram (lihat notify-bot.js +
+// telegram-bot/docs/server-push-patch.md). Opsional: kalau BOT_NOTIFY_URL /
+// BOT_NOTIFY_SECRET tidak di-set, server jalan seperti biasa dan bot
+// mengandalkan poll 1 menit sebagai cadangan. Push di-AWAIT (bukan
+// fire-and-forget): Vercel membekukan function begitu respons dikirim,
+// jadi push yang tidak ditunggu bisa tidak pernah keluar. Timeout
+// (BOT_NOTIFY_TIMEOUT_MS, default 1500 ms) membatasi biayanya; kalau bot
+// down, push dilewati + dicatat, dan poll cadangan meneruskannya.
+const botNotifier = createNotifier({
+  url: process.env.BOT_NOTIFY_URL || "",
+  secret: process.env.BOT_NOTIFY_SECRET || "",
+  teamId: process.env.TEAM_ID || "raden",
+  timeoutMs: Number(process.env.BOT_NOTIFY_TIMEOUT_MS || "1500") || 1500,
+});
+
 function logActivity(agentId, event) {
-  state.activity.push({ agent: agentId, event, time: new Date().toISOString() });
+  const entry = { agent: agentId, event, time: new Date().toISOString() };
+  state.activity.push(entry);
   if (state.activity.length > 300) state.activity = state.activity.slice(-300);
+  return entry;
 }
 
 function agentRow(agentId) {
@@ -118,8 +136,9 @@ async function doUpdateStatus(agentId, { activity, detail }) {
   if (detail !== undefined) row.statusDetail = detail;
   row.status = "connected";
   if (!row.connectedAt) row.connectedAt = new Date().toISOString();
-  logActivity(agentId, `${row.name} update status: ${row.currentActivity}`);
+  const entry = logActivity(agentId, `${row.name} update status: ${row.currentActivity}`);
   await touch();
+  await botNotifier.notify({ type: "activity", event: activityEvent(entry) });
   return { ok: true, agent: publicState().agents.find((a) => a.id === agentId) };
 }
 
@@ -134,8 +153,9 @@ async function doUpsertTask(agentId, { id, title, detail, time, status }) {
       if (detail !== undefined) existing.detail = detail;
       if (time !== undefined) existing.time = time;
       if (status !== undefined) existing.status = status;
-      logActivity(agentId, `${agentRow(agentId).name} mengubah tugas "${existing.title}"`);
+      const entry = logActivity(agentId, `${agentRow(agentId).name} mengubah tugas "${existing.title}"`);
       await touch();
+      await botNotifier.notify({ type: "activity", event: activityEvent(entry) });
       return { ok: true, task: existing };
     }
   }
@@ -148,8 +168,9 @@ async function doUpsertTask(agentId, { id, title, detail, time, status }) {
     title: title || "(tanpa judul)",
   };
   state.tasks.push(task);
-  logActivity(agentId, `${agentRow(agentId).name} menambah tugas "${task.title}"`);
+  const entry = logActivity(agentId, `${agentRow(agentId).name} menambah tugas "${task.title}"`);
   await touch();
+  await botNotifier.notify({ type: "activity", event: activityEvent(entry) });
   return { ok: true, task };
 }
 
@@ -160,8 +181,9 @@ async function doSetTaskStatus(agentId, { id, status }) {
     throw new Error(`Tugas "${id}" milik ${task.agent}, bukan ${agentId}. Agent hanya boleh mengubah tugasnya sendiri.`);
   }
   task.status = status;
-  logActivity(agentId, `${agentRow(agentId).name} mengubah status "${task.title}" → ${status}`);
+  const entry = logActivity(agentId, `${agentRow(agentId).name} mengubah status "${task.title}" → ${status}`);
   await touch();
+  await botNotifier.notify({ type: "activity", event: activityEvent(entry) });
   return { ok: true, task };
 }
 
@@ -175,6 +197,12 @@ async function doSendMessage(agentId, { to, text }) {
   const target = to === "team" ? "ruang tim" : `DM ${agentRow(to).name}`;
   logActivity(agentId, `${agentRow(agentId).name} mengirim pesan ke ${target}`);
   await touch();
+  // Pesan relay EL / sistem bot tidak didorong balik (anti-pantul).
+  // Entri log "mengirim pesan" sengaja TIDAK di-push — teks pesannya
+  // sendiri yang diteruskan (poll juga melewatinya, lihat diff.js).
+  if (!isEchoMessage(text)) {
+    await botNotifier.notify({ type: "message", event: messageEvent(msg) });
+  }
   return { ok: true, message: msg };
 }
 
