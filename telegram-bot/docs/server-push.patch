@@ -1,0 +1,505 @@
+diff --git a/notify-bot.js b/notify-bot.js
+new file mode 100644
+index 0000000..f0de28a
+--- /dev/null
++++ b/notify-bot.js
+@@ -0,0 +1,106 @@
++// notify-bot.js — push instan ke bot Telegram (POST /api/notify).
++//
++// Server memanggil bot SETIAP ada pesan/status/tugas baru, supaya pemilik
++// melihatnya di Telegram dalam hitungan detik — tanpa menunggu poll.
++// Dipakai server.js di akhir tiap fungsi mutasi (doSendMessage,
++// doUpdateStatus, doUpsertTask, doSetTaskStatus).
++//
++// Cara kerja:
++//   POST <BOT_NOTIFY_URL>  (mis. https://<domain-bot>/api/notify)
++//   Body: { teamId, type: "message" | "activity", event: {...} }
++//   Header: X-Bot-Signature: sha256=<HMAC-SHA256(secret, body)>
++//   Timeout: BOT_NOTIFY_TIMEOUT_MS (default 1500 ms).
++//
++// Env (server):
++//   BOT_NOTIFY_URL     — URL endpoint /api/notify di deployment bot
++//                        (WAJIB punya URL publik — bot harus di-deploy
++//                        di Vercel; mode lokal tidak bisa menerima push).
++//   BOT_NOTIFY_SECRET  — secret HMAC; NILAI YANG SAMA harus di-set di bot.
++//   TEAM_ID            — id tim server ini di registry bot (mis. "raden").
++//   BOT_NOTIFY_TIMEOUT_MS — opsional, default 1500.
++//
++// Kalau bot DOWN (timeout / koneksi gagal / HTTP bukan 2xx):
++//   -> DILEWATI + dicatat di log (console.warn). TIDAK ada antrean dan
++//      TIDAK ada retry. Alasannya: poll 1 menit adalah cadangan yang akan
++//      meneruskan peristiwa itu (cursor yang sama mencegah duplikat), jadi
++//      antrean hanya menambah kerumitan + risiko banjir duplikat.
++//      Push tidak pernah menggagalkan mutasi: notify() TIDAK PERNAH throw.
++//
++// Kalau push TIDAK dikonfigurasi (URL/secret kosong): notifier non-aktif,
++// server jalan seperti biasa (poll saja). Jadi patch ini aman di-deploy
++// sebelum bot siap — push mulai jalan begitu env di-set + server restart.
++
++import { createHmac } from "node:crypto";
++
++export const DEFAULT_TIMEOUT_MS = 1500;
++
++// Prefix yang dipakai bot untuk pesan relay EL / pesan sistemnya sendiri
++// (telegram-bot/lib/config.js: EL_PREFIX, BOT_PREFIX). Pesan dengan prefix
++// ini TIDAK didorong balik ke Telegram (anti-pantul).
++export const EL_PREFIX = "[EL] ";
++export const BOT_PREFIX = "[Bot] ";
++
++export function signPayload(secret, rawBody) {
++  return `sha256=${createHmac("sha256", secret).update(rawBody).digest("hex")}`;
++}
++
++// Pesan relay EL / sistem bot — jangan didorong balik ke Telegram.
++export function isEchoMessage(text) {
++  return typeof text === "string" && (text.startsWith(EL_PREFIX) || text.startsWith(BOT_PREFIX));
++}
++
++// Bentuk peristiwa push = bentuk peristiwa poll (telegram-bot/lib/diff.js):
++// time = epoch ms (bukan ISO) supaya kursor dedup push-vs-poll cocok.
++export function messageEvent(msg) {
++  return {
++    kind: "message",
++    id: msg.id,
++    time: Date.parse(msg.time),
++    from: msg.from,
++    to: msg.to,
++    text: msg.text,
++  };
++}
++
++export function activityEvent(entry) {
++  return { kind: "activity", time: Date.parse(entry.time), agent: entry.agent, event: entry.event };
++}
++
++export function createNotifier({
++  url = "",
++  secret = "",
++  teamId = "raden",
++  timeoutMs = DEFAULT_TIMEOUT_MS,
++  fetchImpl = globalThis.fetch,
++} = {}) {
++  const enabled = Boolean(url && secret);
++
++  // Kirim satu push. TIDAK PERNAH throw — semua kegagalan dikembalikan
++  // sebagai { ok: false, reason } dan dicatat, supaya mutasi server
++  // tidak pernah gagal gara-gara bot.
++  async function notify({ type, event }) {
++    if (!enabled) return { ok: false, reason: "disabled" };
++    const payload = JSON.stringify({ teamId, type, event });
++    try {
++      const res = await fetchImpl(url, {
++        method: "POST",
++        headers: {
++          "Content-Type": "application/json",
++          "X-Bot-Signature": signPayload(secret, payload),
++        },
++        body: payload,
++        signal: AbortSignal.timeout(timeoutMs),
++      });
++      if (!res.ok) {
++        console.warn(`[notify-bot] push ${type} ditolak bot (HTTP ${res.status}) — dilewati, poll cadangan akan meneruskan.`);
++        return { ok: false, reason: `http-${res.status}` };
++      }
++      return { ok: true, status: res.status };
++    } catch (e) {
++      console.warn(`[notify-bot] push ${type} gagal (${e.message}) — dilewati, poll cadangan akan meneruskan.`);
++      return { ok: false, reason: e.message };
++    }
++  }
++
++  return { enabled, notify };
++}
+diff --git a/package.json b/package.json
+index 432758f..9cf117c 100644
+--- a/package.json
++++ b/package.json
+@@ -1 +1 @@
+-{"dependencies":{"@modelcontextprotocol/sdk":"^1.32.2","@supabase/supabase-js":"^2.119.2","zod":"^4.6.7"},"description":"Satu server bersama untuk tiga akun Muse (Mas, Mbak, Ell): tiap agent join sendiri lewat konektor MCP + kunci API-nya, lalu update status dan tugasnya sendiri. EL memantau ketiganya di satu dashboard.","engines":{"node":">=18"},"license":"MIT","name":"muse-team-server","scripts":{"start":"node server.js","test":"node test/test-mcp.mjs && node test/test-supabase.mjs"},"type":"module","version":"1.0.0"}
+\ No newline at end of file
++{"dependencies":{"@modelcontextprotocol/sdk":"^1.32.2","@supabase/supabase-js":"^2.119.2","zod":"^4.6.7"},"description":"Satu server bersama untuk tiga akun Muse (Mas, Mbak, Ell): tiap agent join sendiri lewat konektor MCP + kunci API-nya, lalu update status dan tugasnya sendiri. EL memantau ketiganya di satu dashboard.","engines":{"node":">=18"},"license":"MIT","name":"muse-team-server","scripts":{"start":"node server.js","test":"node test/test-mcp.mjs && node test/test-supabase.mjs && node test/test-notify-bot.mjs"},"type":"module","version":"1.0.0"}
+\ No newline at end of file
+diff --git a/server.js b/server.js
+index 85cfff3..dce0d1f 100644
+--- a/server.js
++++ b/server.js
+@@ -23,6 +23,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+ import { z } from "zod";
+ import { createStateStore, createSupabaseClient } from "./store.js";
++import { activityEvent, createNotifier, isEchoMessage, messageEvent } from "./notify-bot.js";
+ 
+ const __dirname = path.dirname(fileURLToPath(import.meta.url));
+ const PORT = Number(process.env.PORT || 3000);
+@@ -76,9 +77,26 @@ const store = createStateStore({
+ 
+ let state = await store.load();
+ 
++// Push instan ke bot Telegram (lihat notify-bot.js +
++// telegram-bot/docs/server-push-patch.md). Opsional: kalau BOT_NOTIFY_URL /
++// BOT_NOTIFY_SECRET tidak di-set, server jalan seperti biasa dan bot
++// mengandalkan poll 1 menit sebagai cadangan. Push di-AWAIT (bukan
++// fire-and-forget): Vercel membekukan function begitu respons dikirim,
++// jadi push yang tidak ditunggu bisa tidak pernah keluar. Timeout
++// (BOT_NOTIFY_TIMEOUT_MS, default 1500 ms) membatasi biayanya; kalau bot
++// down, push dilewati + dicatat, dan poll cadangan meneruskannya.
++const botNotifier = createNotifier({
++  url: process.env.BOT_NOTIFY_URL || "",
++  secret: process.env.BOT_NOTIFY_SECRET || "",
++  teamId: process.env.TEAM_ID || "raden",
++  timeoutMs: Number(process.env.BOT_NOTIFY_TIMEOUT_MS || "1500") || 1500,
++});
++
+ function logActivity(agentId, event) {
+-  state.activity.push({ agent: agentId, event, time: new Date().toISOString() });
++  const entry = { agent: agentId, event, time: new Date().toISOString() };
++  state.activity.push(entry);
+   if (state.activity.length > 300) state.activity = state.activity.slice(-300);
++  return entry;
+ }
+ 
+ function agentRow(agentId) {
+@@ -118,8 +136,9 @@ async function doUpdateStatus(agentId, { activity, detail }) {
+   if (detail !== undefined) row.statusDetail = detail;
+   row.status = "connected";
+   if (!row.connectedAt) row.connectedAt = new Date().toISOString();
+-  logActivity(agentId, `${row.name} update status: ${row.currentActivity}`);
++  const entry = logActivity(agentId, `${row.name} update status: ${row.currentActivity}`);
+   await touch();
++  await botNotifier.notify({ type: "activity", event: activityEvent(entry) });
+   return { ok: true, agent: publicState().agents.find((a) => a.id === agentId) };
+ }
+ 
+@@ -134,8 +153,9 @@ async function doUpsertTask(agentId, { id, title, detail, time, status }) {
+       if (detail !== undefined) existing.detail = detail;
+       if (time !== undefined) existing.time = time;
+       if (status !== undefined) existing.status = status;
+-      logActivity(agentId, `${agentRow(agentId).name} mengubah tugas "${existing.title}"`);
++      const entry = logActivity(agentId, `${agentRow(agentId).name} mengubah tugas "${existing.title}"`);
+       await touch();
++      await botNotifier.notify({ type: "activity", event: activityEvent(entry) });
+       return { ok: true, task: existing };
+     }
+   }
+@@ -148,8 +168,9 @@ async function doUpsertTask(agentId, { id, title, detail, time, status }) {
+     title: title || "(tanpa judul)",
+   };
+   state.tasks.push(task);
+-  logActivity(agentId, `${agentRow(agentId).name} menambah tugas "${task.title}"`);
++  const entry = logActivity(agentId, `${agentRow(agentId).name} menambah tugas "${task.title}"`);
+   await touch();
++  await botNotifier.notify({ type: "activity", event: activityEvent(entry) });
+   return { ok: true, task };
+ }
+ 
+@@ -160,8 +181,9 @@ async function doSetTaskStatus(agentId, { id, status }) {
+     throw new Error(`Tugas "${id}" milik ${task.agent}, bukan ${agentId}. Agent hanya boleh mengubah tugasnya sendiri.`);
+   }
+   task.status = status;
+-  logActivity(agentId, `${agentRow(agentId).name} mengubah status "${task.title}" → ${status}`);
++  const entry = logActivity(agentId, `${agentRow(agentId).name} mengubah status "${task.title}" → ${status}`);
+   await touch();
++  await botNotifier.notify({ type: "activity", event: activityEvent(entry) });
+   return { ok: true, task };
+ }
+ 
+@@ -175,6 +197,12 @@ async function doSendMessage(agentId, { to, text }) {
+   const target = to === "team" ? "ruang tim" : `DM ${agentRow(to).name}`;
+   logActivity(agentId, `${agentRow(agentId).name} mengirim pesan ke ${target}`);
+   await touch();
++  // Pesan relay EL / sistem bot tidak didorong balik (anti-pantul).
++  // Entri log "mengirim pesan" sengaja TIDAK di-push — teks pesannya
++  // sendiri yang diteruskan (poll juga melewatinya, lihat diff.js).
++  if (!isEchoMessage(text)) {
++    await botNotifier.notify({ type: "message", event: messageEvent(msg) });
++  }
+   return { ok: true, message: msg };
+ }
+ 
+diff --git a/test/test-notify-bot.mjs b/test/test-notify-bot.mjs
+new file mode 100644
+index 0000000..8017457
+--- /dev/null
++++ b/test/test-notify-bot.mjs
+@@ -0,0 +1,281 @@
++// Tes push server -> bot Telegram (jalankan: npm test).
++// Unit: notify-bot.js (signature, bentuk peristiwa, notifier mati/tanpa
++// konfigurasi tidak pernah throw). E2E: menyalakan server sendiri di port
++// tes dengan STATE_FILE sementara + stub HTTP sebagai "bot", lalu POST
++// /api/messages, /api/status, /api/tasks dan memastikan stub menerima push
++// yang benar (teamId, type, event, signature HMAC valid) — dan pesan
++// relay [EL] TIDAK di-push. Tidak menyentuh data/state.json asli dan
++// tidak menyentuh server yang jalan. Keluar 0 kalau semua lolos.
++import { spawn } from "node:child_process";
++import fs from "node:fs";
++import http from "node:http";
++import os from "node:os";
++import path from "node:path";
++import { fileURLToPath } from "node:url";
++import {
++  activityEvent,
++  createNotifier,
++  isEchoMessage,
++  messageEvent,
++  signPayload,
++} from "../notify-bot.js";
++
++const __dirname = path.dirname(fileURLToPath(import.meta.url));
++const ROOT = path.join(__dirname, "..");
++const PORT = 3458;
++const BASE = `http://127.0.0.1:${PORT}`;
++const TEST_STATE = path.join(os.tmpdir(), "muse-team-server-test-notify-state.json");
++const SECRET = "test-notify-secret";
++
++const KEYS = { mas: "test-mas-key", mbak: "test-mbak-key", ell: "test-ell-key" };
++
++let pass = 0;
++let fail = 0;
++function check(name, ok, extra = "") {
++  if (ok) {
++    pass++;
++    console.log(`  PASS  ${name}`);
++  } else {
++    fail++;
++    console.log(`  FAIL  ${name} ${extra}`);
++  }
++}
++
++async function waitHealth(timeoutMs = 15000) {
++  const start = Date.now();
++  while (Date.now() - start < timeoutMs) {
++    try {
++      const r = await fetch(`${BASE}/health`);
++      if (r.ok) return true;
++    } catch {
++      /* belum nyala */
++    }
++    await new Promise((r) => setTimeout(r, 300));
++  }
++  return false;
++}
++
++// --- Stub "bot": tangkap push, verifikasi signature HMAC -------------------
++function startStubBot() {
++  const pushes = [];
++  const server = http.createServer((req, res) => {
++    const chunks = [];
++    req.on("data", (c) => chunks.push(c));
++    req.on("end", () => {
++      const raw = Buffer.concat(chunks);
++      let body = null;
++      try {
++        body = JSON.parse(raw.toString("utf8"));
++      } catch {
++        /* abaikan */
++      }
++      const sig = req.headers["x-bot-signature"];
++      const valid = typeof sig === "string" && sig === signPayload(SECRET, raw);
++      pushes.push({ path: req.url, signatureValid: valid, body });
++      res.writeHead(200, { "Content-Type": "application/json" });
++      res.end(JSON.stringify({ ok: true }));
++    });
++  });
++  return new Promise((resolve) => {
++    server.listen(0, "127.0.0.1", () => resolve({ server, port: server.address().port, pushes }));
++  });
++}
++
++async function main() {
++  // --- 1. Unit: bentuk + signature ----------------------------------------
++  {
++    const msg = { id: "abc-1", time: "2026-11-27T07:00:00.000Z", from: "mas", to: "team", text: "halo" };
++    const ev = messageEvent(msg);
++    check("messageEvent: bentuk poll (time epoch ms)", ev.kind === "message" && ev.time === Date.parse(msg.time) && ev.id === "abc-1" && ev.text === "halo");
++    const act = activityEvent({ agent: "mbak", event: "Mbak update status: kerja", time: "2026-11-27T07:01:00.000Z" });
++    check("activityEvent: bentuk poll", act.kind === "activity" && act.agent === "mbak" && act.time === Date.parse("2026-11-27T07:01:00.000Z"));
++    check("isEchoMessage: [EL]/[Bot] dikenali", isEchoMessage("[EL] x") && isEchoMessage("[Bot] x") && !isEchoMessage("halo"));
++    const sig = signPayload(SECRET, "isi-body");
++    check("signPayload: deterministik + format sha256=", sig.startsWith("sha256=") && sig === signPayload(SECRET, "isi-body"));
++    check("signPayload: beda secret/body -> beda signature", sig !== signPayload("lain", "isi-body") && sig !== signPayload(SECRET, "lain"));
++  }
++
++  // --- 2. Unit: notifier ---------------------------------------------------
++  {
++    const disabled = createNotifier({ url: "", secret: "" });
++    check("notifier non-aktif tanpa URL/secret", disabled.enabled === false);
++    let fetchCalled = false;
++    const r1 = await disabled.notify({ type: "message", event: {} });
++    check("notifier non-aktif: notify() tidak memanggil fetch", r1.ok === false && r1.reason === "disabled" && !fetchCalled);
++
++    const noSecret = createNotifier({ url: "http://127.0.0.1:9/api/notify", secret: "", fetchImpl: async () => { fetchCalled = true; return { ok: true }; } });
++    check("notifier non-aktif tanpa secret", noSecret.enabled === false);
++
++    let captured = null;
++    const okFetch = createNotifier({
++      url: "http://127.0.0.1:9/api/notify",
++      secret: SECRET,
++      teamId: "raden",
++      fetchImpl: async (url, opts) => {
++        captured = { url, headers: opts.headers, body: opts.body };
++        return { ok: true, status: 200 };
++      },
++    });
++    const r2 = await okFetch.notify({ type: "message", event: { kind: "message", id: "m1", time: 1, from: "mas", to: "team", text: "halo" } });
++    const parsed = JSON.parse(captured.body);
++    check("notifier: POST JSON teamId+type+event", r2.ok === true && parsed.teamId === "raden" && parsed.type === "message" && parsed.event.text === "halo");
++    check(
++      "notifier: header X-Bot-Signature = HMAC body",
++      captured.headers["X-Bot-Signature"] === signPayload(SECRET, captured.body)
++    );
++
++    const down = createNotifier({
++      url: "http://127.0.0.1:9/api/notify",
++      secret: SECRET,
++      fetchImpl: async () => {
++        throw new Error("connect ECONNREFUSED");
++      },
++    });
++    let threw = false;
++    let r3 = null;
++    try {
++      r3 = await down.notify({ type: "message", event: {} });
++    } catch {
++      threw = true;
++    }
++    check("notifier: bot down -> { ok:false } tanpa throw", !threw && r3 && r3.ok === false);
++
++    const http500 = createNotifier({
++      url: "http://127.0.0.1:9/api/notify",
++      secret: SECRET,
++      fetchImpl: async () => ({ ok: false, status: 500 }),
++    });
++    const r4 = await http500.notify({ type: "message", event: {} });
++    check("notifier: bot jawab 500 -> { ok:false, http-500 }", r4.ok === false && r4.reason === "http-500");
++
++    // Timeout: server sungguhan yang tidak pernah menjawab (socket-nya
++    // yang menjaga event loop tetap hidup — AbortSignal.timeout memakai
++    // timer unrefed, jadi stub fetch tanpa socket membuat proses keluar
++    // sebelum abort; di produksi fetch sungguhan selalu punya socket).
++    const slowServer = http.createServer(() => {
++      /* sengaja tidak pernah menjawab */
++    });
++    await new Promise((r) => slowServer.listen(0, "127.0.0.1", r));
++    const slow = createNotifier({
++      url: `http://127.0.0.1:${slowServer.address().port}/api/notify`,
++      secret: SECRET,
++      timeoutMs: 100,
++    });
++    const t0 = Date.now();
++    const r5 = await slow.notify({ type: "message", event: {} });
++    check("notifier: timeout -> { ok:false } dalam ~100ms", r5.ok === false && Date.now() - t0 < 2000);
++    slowServer.close();
++  }
++
++  // --- 3. E2E: server sungguhan -> stub bot --------------------------------
++  const stub = await startStubBot();
++  fs.copyFileSync(path.join(ROOT, "data", "seed.json"), TEST_STATE);
++  const child = spawn("node", ["server.js"], {
++    cwd: ROOT,
++    stdio: ["ignore", "ignore", "pipe"],
++    env: {
++      ...process.env,
++      PORT: String(PORT),
++      STATE_FILE: TEST_STATE,
++      SUPABASE_URL: "",
++      SUPABASE_SERVICE_KEY: "",
++      VERCEL: "",
++      MAS_API_KEY: KEYS.mas,
++      MBAK_API_KEY: KEYS.mbak,
++      ELL_API_KEY: KEYS.ell,
++      BOT_NOTIFY_URL: `http://127.0.0.1:${stub.port}/api/notify`,
++      BOT_NOTIFY_SECRET: SECRET,
++      TEAM_ID: "raden",
++    },
++  });
++  let serverErr = "";
++  child.stderr.on("data", (d) => {
++    serverErr += d.toString();
++  });
++
++  try {
++    const up = await waitHealth();
++    check("e2e: server tes nyala (/health)", up, serverErr.slice(-500));
++    if (!up) throw new Error("server tidak nyala");
++
++    const post = async (pathName, key, body) => {
++      const r = await fetch(`${BASE}${pathName}`, {
++        method: "POST",
++        headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
++        body: JSON.stringify(body),
++      });
++      return { status: r.status, json: await r.json() };
++    };
++
++    // Pesan -> push message.
++    const m1 = await post("/api/messages", KEYS.ell, { to: "team", text: "halo tim" });
++    check("e2e: POST /api/messages 200", m1.status === 200 && m1.json.ok === true);
++    check(
++      "e2e: push message diterima stub (teamId/type/event/signature)",
++      stub.pushes.length === 1 &&
++        stub.pushes[0].signatureValid === true &&
++        stub.pushes[0].body.teamId === "raden" &&
++        stub.pushes[0].body.type === "message" &&
++        stub.pushes[0].body.event.kind === "message" &&
++        stub.pushes[0].body.event.from === "ell" &&
++        stub.pushes[0].body.event.text === "halo tim" &&
++        typeof stub.pushes[0].body.event.time === "number"
++    );
++
++    // Status -> push activity.
++    const s1 = await post("/api/status", KEYS.mas, { activity: "render video", detail: "batch 27" });
++    check("e2e: POST /api/status 200", s1.status === 200 && s1.json.ok === true);
++    check(
++      "e2e: push activity update status diterima",
++      stub.pushes.length === 2 &&
++        stub.pushes[1].signatureValid === true &&
++        stub.pushes[1].body.type === "activity" &&
++        stub.pushes[1].body.event.kind === "activity" &&
++        stub.pushes[1].body.event.agent === "mas" &&
++        stub.pushes[1].body.event.event.includes("update status")
++    );
++
++    // Tugas baru -> push activity.
++    const t1 = await post("/api/tasks", KEYS.mbak, { title: "Tugas uji push", detail: "cek" });
++    check("e2e: POST /api/tasks (baru) 200", t1.status === 200 && t1.json.ok === true && Boolean(t1.json.task?.id));
++    check(
++      "e2e: push activity tambah tugas diterima",
++      stub.pushes.length === 3 &&
++        stub.pushes[2].body.type === "activity" &&
++        stub.pushes[2].body.event.event.includes("menambah tugas")
++    );
++
++    // Ubah status tugas -> push activity.
++    const taskId = t1.json.task.id;
++    const t2 = await post("/api/tasks", KEYS.mbak, { id: taskId, status: "done" });
++    check("e2e: POST /api/tasks (status) 200", t2.status === 200 && t2.json.ok === true);
++    check(
++      "e2e: push activity ubah status diterima",
++      stub.pushes.length === 4 &&
++        stub.pushes[3].body.type === "activity" &&
++        stub.pushes[3].body.event.event.includes("mengubah status")
++    );
++
++    // Pesan relay [EL] -> TIDAK di-push (anti-pantul).
++    const m2 = await post("/api/messages", KEYS.ell, { to: "team", text: "[EL] jangan pantul" });
++    check("e2e: POST pesan [EL] tetap 200", m2.status === 200 && m2.json.ok === true);
++    check("e2e: pesan [EL] tidak di-push", stub.pushes.length === 4);
++  } finally {
++    child.kill();
++    await new Promise((r) => child.on("exit", r));
++    stub.server.close();
++    try {
++      fs.unlinkSync(TEST_STATE);
++    } catch {
++      /* abaikan */
++    }
++  }
++
++  console.log(`\nnotify-bot: ${pass} lolos, ${fail} gagal`);
++  process.exit(fail ? 1 : 0);
++}
++
++main().catch((e) => {
++  console.error(e);
++  process.exit(1);
++});
